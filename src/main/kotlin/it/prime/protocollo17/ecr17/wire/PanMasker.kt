@@ -1,19 +1,67 @@
 package it.prime.protocollo17.ecr17.wire
 
-// STUB di WP0 (§8.2): firme definitive di §3.8, corpi a carico di WP1.
-
 /**
  * Mascheramento del PAN (A§11 punto 17, invariante M9).
  *
  * Dove si applica: `ProtocolEvent.Wire` RX ⇒ [maskFrame]; `ProtocolEvent.Discarded` ⇒ [maskDigitRuns];
  * righe S con `maskPan = true` ⇒ [maskDigitRuns] su raw e text; `SimEvent.FrameOut` ⇒ [maskFrame].
+ *
+ * Perché due strategie: sugli esiti la posizione del PAN è nota (pos 13, len 19) e mascherare solo lì lascia
+ * leggibili acquirer, STAN e online id, che sono proprio le sequenze di cifre lunghe da confrontare con lo
+ * scontrino. Dove la posizione non è nota (righe di scontrino, frammenti scartati, codici inattesi) si usa la
+ * rete di sicurezza [maskDigitRuns]. Il terminale Ingenico maschera già il PAN, ma altri (Nexi, A§9.9) no.
+ *
+ * Tutte le funzioni restituiscono una copia e conservano la lunghezza: posizioni e offset restano validi.
  */
 object PanMasker {
-    /** Vista UI (semantica rust maskPan): solo cifre, ultime 4 visibili; ≤ 4 cifre ⇒ "****". */
-    fun maskForDisplay(pan: String): String = TODO("WP1: PanMasker.kt")
 
-    /** Larghezza fissa: ogni cifra tranne le ultime 4 diventa '*', gli altri caratteri restano. */
-    fun maskFixedWidth(field: String): String = TODO("WP1: PanMasker.kt")
+    /** Offset 0-based (pos 13) e lunghezza del PAN negli esiti E V e i c v. */
+    private const val PAN_OFFSET = 12
+    private const val PAN_LENGTH = 19
+
+    /** Offset del codice messaggio (pos 10) e dell'esito (pos 11-12). */
+    private const val CODE_OFFSET = 9
+    private const val RESULT_OFFSET = 10
+
+    /** Dalla pos 11 in poi inizia il corpo del messaggio (dopo TID, '0' e codice). */
+    private const val BODY_OFFSET = 10
+
+    /** Cifre lasciate visibili: le ultime 4, come sullo scontrino. */
+    private const val VISIBLE_DIGITS = 4
+
+    /** Sequenza minima di cifre trattata come possibile PAN da [maskDigitRuns] (i PAN hanno 13..19 cifre). */
+    private const val MIN_PAN_RUN = 13
+
+    private const val MASK = '*'
+    private const val MASK_BYTE = '*'.code.toByte()
+
+    /** Esiti con il PAN in pos 13/19 solo nel ramo diverso da KO ("01"). */
+    private val PAN_IF_NOT_KO = setOf('E', 'V', 'e', 'c', 'v')
+
+    /** Risposte senza PAN: le loro lunghe sequenze di cifre (totali, data/ora, release) vanno lasciate intatte. */
+    private val NO_PAN = setOf('s', 'T', 'C')
+
+    /** Vista UI (semantica rust maskPan): solo cifre, ultime 4 visibili; ≤ 4 cifre ⇒ "****". */
+    fun maskForDisplay(pan: String): String {
+        val digits = pan.filter { it.isAsciiDigit() }
+        if (digits.length <= VISIBLE_DIGITS) return MASK.toString().repeat(VISIBLE_DIGITS)
+        return MASK.toString().repeat(digits.length - VISIBLE_DIGITS) + digits.takeLast(VISIBLE_DIGITS)
+    }
+
+    /**
+     * Larghezza fissa: ogni cifra tranne le ultime 4 diventa '*', gli altri caratteri restano.
+     *
+     * Con 4 cifre o meno non cambia nulla: non c'è niente oltre le 4 cifre che si possono comunque mostrare.
+     */
+    fun maskFixedWidth(field: String): String {
+        val chars = field.toCharArray()
+        maskDigitsExceptLast(
+            size = chars.size,
+            isDigit = { chars[it].isAsciiDigit() },
+            mask = { chars[it] = MASK },
+        )
+        return String(chars)
+    }
 
     /**
      * Copia del payload applicativo mascherato secondo il codice in pos 10:
@@ -21,18 +69,121 @@ object PanMasker {
      * - E, V, e, c, v: PAN (pos 13 len 19) mascherato se l'esito (pos 11-12) è diverso da "01";
      * - 'S' (riga di scontrino) e codici fuori dalle risposte v1 (U, K, altro): maskDigitRuns dalla pos 11;
      * - s, T, C: copia identica (nessun PAN; contengono lunghe sequenze di cifre che NON vanno toccate).
+     *
+     * Un payload troncato maschera la parte del campo PAN che c'è; un esito mancante (payload < 12 byte) conta
+     * come "diverso da 01", perché nel dubbio si maschera.
      */
-    fun maskApplicationPayload(payload: ByteArray): ByteArray = TODO("WP1: PanMasker.kt")
+    fun maskApplicationPayload(payload: ByteArray): ByteArray {
+        val out = payload.copyOf()
+        val code = if (out.size > CODE_OFFSET) (out[CODE_OFFSET].toInt() and 0xFF).toChar() else null
+        when {
+            code == 'i' -> maskPanField(out)
+            code in PAN_IF_NOT_KO -> if (!isKo(out)) maskPanField(out)
+            code in NO_PAN -> Unit
+            else -> maskDigitRunsInPlace(out, from = BODY_OFFSET)   // 'S', U, K, codici sconosciuti, payload corti
+        }
+        return out
+    }
 
-    /** Come sopra ma su un frame STX…ETX LRC completo; l'LRC resta quello originale. */
-    fun maskFrame(raw: ByteArray): ByteArray = TODO("WP1: PanMasker.kt")
+    /**
+     * Come sopra ma su un frame STX…ETX LRC completo; l'LRC resta quello originale.
+     *
+     * Il payload va dallo STX al primo ETX (o alla fine, se l'ETX manca: un frame troncato resta posizionale).
+     * ETX e LRC restano identici; eventuali byte oltre l'LRC passano dalla rete di sicurezza. Un frame che non
+     * inizia con STX (controllo, progress) passa interamente da [maskDigitRuns]: ACK e NAK non cambiano.
+     */
+    fun maskFrame(raw: ByteArray): ByteArray {
+        if (raw.isEmpty() || (raw[0].toInt() and 0xFF) != ControlChars.STX) return maskDigitRuns(raw)
+        var etx = raw.size
+        for (i in 1 until raw.size) {
+            if ((raw[i].toInt() and 0xFF) == ControlChars.ETX) {
+                etx = i
+                break
+            }
+        }
+        val out = raw.copyOf()
+        maskApplicationPayload(raw.copyOfRange(1, etx)).copyInto(out, destinationOffset = 1)
+        val afterLrc = etx + 2
+        if (afterLrc < out.size) maskDigitRunsInPlace(out, from = afterLrc)
+        return out
+    }
 
     /**
      * Rete di sicurezza senza posizioni: ogni sequenza di ≥ 13 cifre ASCII consecutive diventa '*' tranne le
      * ultime 4. Per byte scartati (ProtocolEvent.Discarded), testo delle righe S, byte non applicativi del
      * log del simulatore. Può mascherare anche STAN/online in un frammento scartato: accettato.
      */
-    fun maskDigitRuns(bytes: ByteArray): ByteArray = TODO("WP1: PanMasker.kt")
+    fun maskDigitRuns(bytes: ByteArray): ByteArray {
+        val out = bytes.copyOf()
+        maskDigitRunsInPlace(out, from = 0)
+        return out
+    }
 
-    fun maskDigitRuns(text: String): String = TODO("WP1: PanMasker.kt")
+    fun maskDigitRuns(text: String): String {
+        val chars = text.toCharArray()
+        forEachDigitRun(size = chars.size, from = 0, isDigit = { chars[it].isAsciiDigit() }) { runStart, runEnd ->
+            for (i in runStart until runEnd - VISIBLE_DIGITS) chars[i] = MASK
+        }
+        return String(chars)
+    }
+
+    // ─── Dettagli ────────────────────────────────────────────────────────────
+
+    /** Solo '0'..'9': `Char.isDigit()` accetterebbe anche cifre Unicode che sul filo ASCII non esistono. */
+    private fun Char.isAsciiDigit(): Boolean = this in '0'..'9'
+
+    private fun isAsciiDigit(b: Byte): Boolean = b in '0'.code.toByte()..'9'.code.toByte()
+
+    /** Esito "01" in pos 11-12 = ramo KO: lì in pos 13 c'è la descrizione dell'errore, non il PAN. */
+    private fun isKo(payload: ByteArray): Boolean =
+        payload.size >= RESULT_OFFSET + 2 &&
+            payload[RESULT_OFFSET] == '0'.code.toByte() &&
+            payload[RESULT_OFFSET + 1] == '1'.code.toByte()
+
+    /** maskFixedWidth sul campo PAN (pos 13 len 19), sulla parte presente se il payload è troncato. */
+    private fun maskPanField(payload: ByteArray) {
+        val from = PAN_OFFSET
+        val to = minOf(payload.size, PAN_OFFSET + PAN_LENGTH)
+        if (from >= to) return
+        maskDigitsExceptLast(
+            size = to - from,
+            isDigit = { isAsciiDigit(payload[from + it]) },
+            mask = { payload[from + it] = MASK_BYTE },
+        )
+    }
+
+    private fun maskDigitRunsInPlace(bytes: ByteArray, from: Int) {
+        forEachDigitRun(size = bytes.size, from = from, isDigit = { isAsciiDigit(bytes[it]) }) { runStart, runEnd ->
+            for (i in runStart until runEnd - VISIBLE_DIGITS) bytes[i] = MASK_BYTE
+        }
+    }
+
+    /** Ogni cifra tranne le ultime [VISIBLE_DIGITS] (contate tra le sole cifre) viene mascherata. */
+    private inline fun maskDigitsExceptLast(size: Int, isDigit: (Int) -> Boolean, mask: (Int) -> Unit) {
+        var digits = 0
+        for (i in 0 until size) if (isDigit(i)) digits++
+        var toMask = digits - VISIBLE_DIGITS
+        var i = 0
+        while (toMask > 0 && i < size) {
+            if (isDigit(i)) {
+                mask(i)
+                toMask--
+            }
+            i++
+        }
+    }
+
+    /** Chiama [onRun] per ogni sequenza [runStart, runEnd) di almeno [MIN_PAN_RUN] cifre, a partire da [from]. */
+    private inline fun forEachDigitRun(size: Int, from: Int, isDigit: (Int) -> Boolean, onRun: (Int, Int) -> Unit) {
+        var i = from
+        while (i < size) {
+            if (!isDigit(i)) {
+                i++
+                continue
+            }
+            val runStart = i
+            while (i < size && isDigit(i)) i++
+            if (i - runStart >= MIN_PAN_RUN) onRun(runStart, i)
+        }
+    }
 }
