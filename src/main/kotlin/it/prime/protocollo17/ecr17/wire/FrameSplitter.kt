@@ -59,7 +59,15 @@ class FrameSplitter(
         end += bytes.size
     }
 
-    /** Prossimo elemento estraibile dalla testa, oppure null se servono altri byte. */
+    /**
+     * Prossimo elemento estraibile dalla testa, oppure null se servono altri byte.
+     *
+     * Attenzione: null NON vuol dire buffer vuoto. Rumore non seguito da un lead (01 02 06 15), un frame senza
+     * terminatore e un `06`/`06 03`/`15`/`15 03` isolati restano in [pendingSize] finché arrivano altri byte
+     * (o il rumore raggiunge maxFrameBytes): solo così l'esito non dipende dai chunk. Chi chiude uno scambio
+     * deve quindi chiamare [clear] e registrare il residuo come scarto (§3.21), altrimenti quei byte
+     * spariscono senza traccia dal log del traffico.
+     */
     fun next(): SplitItem? {
         if (pendingSize() == 0) return null
         return when (at(0)) {
@@ -86,9 +94,7 @@ class FrameSplitter(
         if (size !in 1..2) return null
         if (size == 2 && at(1) != ControlChars.ETX) return null
         val item: SplitItem = when (at(0)) {
-            ControlChars.ACK -> SplitItem.Parsed(
-                WireFrame.Control(raw = copy(0, size), kind = ControlKind.ACK, lrc = null, match = ControlLrcMatch.BARE),
-            )
+            ControlChars.ACK -> SplitItem.Parsed(bareAck(size = size))
             ControlChars.NAK -> SplitItem.Discarded(copy(0, size), DiscardReason.AMBIGUOUS_NAK)
             else -> return null
         }
@@ -97,7 +103,13 @@ class FrameSplitter(
         return item
     }
 
-    /** Svuota e restituisce i byte pendenti (per log). */
+    /**
+     * Svuota e restituisce i byte pendenti (per log).
+     *
+     * È l'unica via d'uscita del residuo che [next] trattiene (rumore in coda, frame troncato): la sessione la
+     * chiama alla fine di ogni scambio e dopo lo splitter temporaneo degli orfani (§3.21). Il residuo può
+     * contenere un frammento di esito, quindi va loggato solo dopo `PanMasker.maskDigitRuns` (M9).
+     */
     fun clear(): ByteArray {
         val pending = copy(0, pendingSize())
         start = 0
@@ -111,11 +123,11 @@ class FrameSplitter(
     private fun nextAck(): SplitItem? {
         if (pendingSize() < 2) return null
         val b1 = at(1)
-        if (isFrameStart(b1)) return parsed(1, WireFrame.Control(copy(0, 1), ControlKind.ACK, lrc = null, match = ControlLrcMatch.BARE))
+        if (isFrameStart(b1)) return parsed(1, bareAck(size = 1))
         if (b1 != ControlChars.ETX) return discard(1, DiscardReason.CONTROL_WITHOUT_ETX)
         if (pendingSize() < 3) return null
         val lrc = at(2)
-        if (isFrameStart(lrc)) return parsed(2, WireFrame.Control(copy(0, 2), ControlKind.ACK, lrc = null, match = ControlLrcMatch.BARE))
+        if (isFrameStart(lrc)) return parsed(2, bareAck(size = 2))
         val match = when (lrc) {
             ackWire -> ControlLrcMatch.WIRE              // preferito quando coincide con SAME_AS_APP (NOEXT)
             ackSameAsApp -> ControlLrcMatch.SAME_AS_APP
@@ -125,8 +137,12 @@ class FrameSplitter(
             // Si scarta solo il lead: i due byte successivi ripassano dalle regole (resync di 1 byte).
             return discard(1, DiscardReason.CONTROL_LRC_STRICT)
         }
-        return parsed(3, WireFrame.Control(copy(0, 3), ControlKind.ACK, lrc = lrc, match = match))
+        return parsed(3, WireFrame.Control(raw = copy(0, 3), kind = ControlKind.ACK, lrc = lrc, match = match))
     }
+
+    /** ACK nudo dei primi [size] byte (`06` o `06 03`): senza LRC, match BARE. */
+    private fun bareAck(size: Int): WireFrame.Control =
+        WireFrame.Control(raw = copy(0, size), kind = ControlKind.ACK, lrc = null, match = ControlLrcMatch.BARE)
 
     /**
      * `15`: diventa Control(NAK) SOLO con ETX e LRC di una delle due convenzioni, con qualsiasi policy.
@@ -145,7 +161,7 @@ class FrameSplitter(
             nakSameAsApp -> ControlLrcMatch.SAME_AS_APP
             else -> return discard(3, DiscardReason.AMBIGUOUS_NAK)
         }
-        return parsed(3, WireFrame.Control(copy(0, 3), ControlKind.NAK, lrc = lrc, match = match))
+        return parsed(3, WireFrame.Control(raw = copy(0, 3), kind = ControlKind.NAK, lrc = lrc, match = match))
     }
 
     // ─── Frame applicativi e progress ────────────────────────────────────────

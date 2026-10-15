@@ -93,6 +93,28 @@ class PanMaskerTest {
     }
 
     /**
+     * La regola è "mascherato se l'esito è DIVERSO da 01", non "solo se 00": anche 05 (carta non presente, che il
+     * simulatore manda col layout positivo), 09 e un esito sconosciuto hanno il PAN in pos 13. Un controllo
+     * ristretto a "00" lascerebbe in chiaro il PAN di quelle risposte nel log traffico e nel journal (M9).
+     */
+    @Test
+    fun `esiti diversi da 00 e 01 mascherati`() {
+        val tail = Frames.E22_CLEAR.substring(12)                 // PAN in chiaro + coda di E22
+        for (code in listOf('E', 'V', 'e', 'c', 'v')) {
+            for (result in listOf("05", "09", "zz", "10")) {
+                val payload = "025757330$code$result$tail"
+                val masked = maskPayload(payload)
+                val label = "$code con esito \"$result\""
+                assertEquals(payload.length, masked.length, "lunghezza di $label")
+                assertEquals(payload.substring(0, 12), masked.substring(0, 12), "intestazione ed esito invariati in $label")
+                assertEquals(maskedPanField, masked.substring(12, 31), "PAN mascherato in $label")
+                assertEquals(payload.substring(31), masked.substring(31), "coda invariata in $label")
+                assertFalse("4111111111111111" in masked, "PAN in chiaro in $label")
+            }
+        }
+    }
+
+    /**
      * La risposta `i` (75 B) non ha ramo KO (A§4.5.4): il PAN in pos 13/19 va mascherato anche con esito "01".
      * Prima (regola "solo se diverso da 01" applicata a tutti gli esiti) il PAN di un `i` KO finiva in chiaro.
      */
@@ -131,6 +153,28 @@ class PanMaskerTest {
         assertEquals("123456780U************1111", maskPayload("123456780U4111111111111111"))
         assertEquals("123456780K**************1111", maskPayload("123456780K004111111111111111"))
         assertEquals("123456780?************1111", maskPayload("123456780?4111111111111111"))
+    }
+
+    /**
+     * Intestazione spostata (frammento di esito dopo uno STX spurio): la pos 10 è una cifra e il payload passa
+     * dalla rete di sicurezza. Prima le sequenze si contavano solo dalla pos 11: qui il PAN inizia alla pos 4,
+     * dalla pos 11 ne restavano 9 cifre (sotto la soglia) e "4111111111111111" finiva in chiaro, mentre veniva
+     * mascherata la sequenza successiva (M9).
+     */
+    @Test
+    fun `pos 10 numerica maschera anche le sequenze iniziate prima della pos 11`() {
+        val fragment = Frames.E22_CLEAR.substring(12)             // "0004111111111111111CLIR4843…0055"
+        assertTrue(fragment[9].isDigit(), "il vettore deve avere una cifra in pos 10")
+        val masked = maskPayload(fragment)
+        assertEquals("*".repeat(15) + "1111" + "CLIR" + "*".repeat(32) + "0055", masked)
+        assertFalse(longDigitRun.containsMatchIn(masked), "13+ cifre in chiaro in $masked")
+        assertFalse("4111111111111111" in masked)
+
+        // Lo stesso frammento in un frame completo (ProtocolEvent.Wire RX): payload mascherato, ETX e LRC originali.
+        val frame = Frames.app(fragment)
+        val maskedFrame = PanMasker.maskFrame(frame)
+        assertEquals("\u0002$masked\u0003", text(maskedFrame.copyOfRange(0, maskedFrame.size - 1)))
+        assertEquals(frame.last(), maskedFrame.last(), "LRC originale")
     }
 
     /** Payload corti o troncati: nessuna eccezione; il pezzo di PAN presente viene comunque mascherato. */

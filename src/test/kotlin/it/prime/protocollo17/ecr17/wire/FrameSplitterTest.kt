@@ -102,30 +102,49 @@ class FrameSplitterTest {
 
     // ─── ACK (L§13.3) ────────────────────────────────────────────────────────
 
-    /** L'ACK reale dell'Ingenico in stx: prima rust lo scartava (A§3.3), ora è un match WIRE. */
+    /**
+     * L'ACK reale dell'Ingenico in stx: prima rust lo scartava (A§3.3), ora è un match WIRE con ENTRAMBE le policy.
+     * STRICT scarta solo il MISMATCH: se scartasse anche un ACK valido, con RETRANSMIT il pagamento ripartirebbe
+     * (rischio R1, la regressione rust).
+     */
     @Test
-    fun `ACK 06 03 7A in stx e WIRE`() {
-        val s = splitter()
-        s.feed(Frames.ACKW)
-        assertControl(s.next(), ControlKind.ACK, ControlLrcMatch.WIRE, 0x7A, Frames.ACKW)
-        assertNull(s.next())
-        assertEquals(0, s.pendingSize())
+    fun `ACK 06 03 7A in stx e WIRE con ogni policy`() {
+        for (policy in ControlLrcRxPolicy.entries) {
+            val s = splitter(policy = policy)
+            s.feed(Frames.ACKW)
+            assertControl(s.next(), ControlKind.ACK, ControlLrcMatch.WIRE, 0x7A, Frames.ACKW)
+            assertNull(s.next(), "$policy: nient'altro dopo l'ACK")
+            assertEquals(0, s.pendingSize(), "$policy: buffer vuoto dopo l'ACK")
+        }
     }
 
-    /** L'ACK dei repo in stx (06 03 78) è riconosciuto come SAME_AS_APP. */
+    /** L'ACK dei repo e del simulatore in stx (06 03 78, IT-02) è SAME_AS_APP con entrambe le policy. */
     @Test
-    fun `ACK 06 03 78 in stx e SAME_AS_APP`() {
-        val items = split(Frames.ACK78)
-        assertEquals(1, items.size)
-        assertControl(items[0], ControlKind.ACK, ControlLrcMatch.SAME_AS_APP, 0x78, Frames.ACK78)
+    fun `ACK 06 03 78 in stx e SAME_AS_APP con ogni policy`() {
+        for (policy in ControlLrcRxPolicy.entries) {
+            val items = split(Frames.ACK78, policy = policy)
+            assertEquals(1, items.size, "$policy: ${items.map(::describe)}")
+            assertControl(items[0], ControlKind.ACK, ControlLrcMatch.SAME_AS_APP, 0x78, Frames.ACK78)
+        }
     }
 
-    /** In std WIRE resta 7A e SAME_AS_APP diventa 79; in noext coincidono e vince WIRE. */
+    /** In std WIRE resta 7A e SAME_AS_APP diventa 79; in noext coincidono e vince WIRE. Con entrambe le policy. */
     @Test
     fun `match dell'ACK nelle altre modalita`() {
-        assertControl(split(Frames.ACKW, mode = LrcMode.STD).single(), ControlKind.ACK, ControlLrcMatch.WIRE, 0x7A, Frames.ACKW)
-        assertControl(split(Frames.ACK_STD, mode = LrcMode.STD).single(), ControlKind.ACK, ControlLrcMatch.SAME_AS_APP, 0x79, Frames.ACK_STD)
-        assertControl(split(Frames.ACKW, mode = LrcMode.NOEXT).single(), ControlKind.ACK, ControlLrcMatch.WIRE, 0x7A, Frames.ACKW)
+        for (policy in ControlLrcRxPolicy.entries) {
+            assertControl(
+                split(Frames.ACKW, mode = LrcMode.STD, policy = policy).single(),
+                ControlKind.ACK, ControlLrcMatch.WIRE, 0x7A, Frames.ACKW,
+            )
+            assertControl(
+                split(Frames.ACK_STD, mode = LrcMode.STD, policy = policy).single(),
+                ControlKind.ACK, ControlLrcMatch.SAME_AS_APP, 0x79, Frames.ACK_STD,
+            )
+            assertControl(
+                split(Frames.ACKW, mode = LrcMode.NOEXT, policy = policy).single(),
+                ControlKind.ACK, ControlLrcMatch.WIRE, 0x7A, Frames.ACKW,
+            )
+        }
     }
 
     /** `06 03 00`: ACK con LRC di nessuna convenzione, accettato (con match esplicito) solo in TOLERANT. */
@@ -163,6 +182,21 @@ class FrameSplitterTest {
         assertEquals(2, items.size, items.map(::describe).toString())
         assertControl(items[0], ControlKind.ACK, ControlLrcMatch.BARE, null, bytes(0x06))
         assertApplication(items[1], e4)
+    }
+
+    /**
+     * ACK nudo seguito dal progress Ingenico (SOH): la regola "01 o 02 dopo 06" vale per entrambi gli inizi frame.
+     * Una regola limitata allo STX farebbe di `06 01` un CONTROL_WITHOUT_ETX: l'ACK andrebbe perso, e per un
+     * comando ACK_ONLY (E, R) il progress non vale come ACK, quindi scatterebbe il timeout ACK.
+     */
+    @Test
+    fun `ACK nudo seguito da SOH lascia il progress integro`() {
+        for (policy in ControlLrcRxPolicy.entries) {
+            val items = split(bytes(0x06) + Frames.PRG, policy = policy)
+            assertEquals(2, items.size, "$policy: ${items.map(::describe)}")
+            assertControl(items[0], ControlKind.ACK, ControlLrcMatch.BARE, null, bytes(0x06))
+            assertProgress(items[1], "OPERAZIONE IN CORSO ")
+        }
     }
 
     /**
@@ -250,6 +284,17 @@ class FrameSplitterTest {
         assertEquals(2, items.size, items.map(::describe).toString())
         assertDiscarded(items[0], DiscardReason.AMBIGUOUS_NAK, bytes(0x15))
         assertApplication(items[1], e4)
+    }
+
+    /** `15` seguito dal progress (SOH): NAK ambiguo (mai un reinvio, mai un controllo senza ETX) e progress integro. */
+    @Test
+    fun `NAK nudo seguito da SOH e ambiguo e lascia il progress integro`() {
+        for (policy in ControlLrcRxPolicy.entries) {
+            val items = split(bytes(0x15) + Frames.PRG, policy = policy)
+            assertEquals(2, items.size, "$policy: ${items.map(::describe)}")
+            assertDiscarded(items[0], DiscardReason.AMBIGUOUS_NAK, bytes(0x15))
+            assertProgress(items[1], "OPERAZIONE IN CORSO ")
+        }
     }
 
     /** `15 03` seguito dall'esito: 2 byte ambigui ed esito integro. */
@@ -521,6 +566,8 @@ class FrameSplitterTest {
             bytes(0x06) + e4 +                                     // ACK nudo + esito
             bytes(0x06, 0x03) + e4 +                               // ACK nudo di 2 byte + esito
             bytes(0x15) + e4 +                                     // NAK ambiguo + esito
+            bytes(0x06) + Frames.PRG +                             // ACK nudo + progress (SOH)
+            bytes(0x15) + Frames.PRG +                             // NAK ambiguo + progress (SOH)
             bytes(0x15, 0x03) + Frames.PRG +                       // NAK ambiguo di 2 byte + progress
             bytes(0x15, 0x03, 0x00) + Frames.NAKW + bytes(0x15, 0x03, 0x6B) +
             bytes(0x06, 0x03, 0x00) +                              // MISMATCH / CONTROL_LRC_STRICT
@@ -592,6 +639,10 @@ class FrameSplitterTest {
             "APP lrc=46 modes=[STX] [$e4Hex]",
             "DISCARD AMBIGUOUS_NAK [15]",
             "APP lrc=46 modes=[STX] [$e4Hex]",
+            "ACK BARE lrc=null [06]",
+            "PRG [${Hex.spaced(ascii("OPERAZIONE IN CORSO "))}] [$prgHex]",
+            "DISCARD AMBIGUOUS_NAK [15]",
+            "PRG [${Hex.spaced(ascii("OPERAZIONE IN CORSO "))}] [$prgHex]",
             "DISCARD AMBIGUOUS_NAK [15 03]",
             "PRG [${Hex.spaced(ascii("OPERAZIONE IN CORSO "))}] [$prgHex]",
             "DISCARD AMBIGUOUS_NAK [15 03 00]",

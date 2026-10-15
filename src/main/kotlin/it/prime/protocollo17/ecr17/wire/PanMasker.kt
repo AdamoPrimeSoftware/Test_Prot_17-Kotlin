@@ -23,8 +23,9 @@ object PanMasker {
     private const val CODE_OFFSET = 9
     private const val RESULT_OFFSET = 10
 
-    /** Dalla pos 11 in poi inizia il corpo del messaggio (dopo TID, '0' e codice). */
-    private const val BODY_OFFSET = 10
+    /** Codici ASCII delle cifre, confrontati sul byte senza segno. */
+    private const val DIGIT_0 = 0x30
+    private const val DIGIT_9 = 0x39
 
     /** Cifre lasciate visibili: le ultime 4, come sullo scontrino. */
     private const val VISIBLE_DIGITS = 4
@@ -72,6 +73,12 @@ object PanMasker {
      *
      * Un payload troncato maschera la parte del campo PAN che c'è; un esito mancante (payload < 12 byte) conta
      * come "diverso da 01", perché nel dubbio si maschera.
+     *
+     * "Dalla pos 11" in pratica: le sequenze si contano su TUTTO il payload. Con un'intestazione ben formata il
+     * risultato è identico, perché il codice in pos 10 non è una cifra e interrompe la sequenza, e TID + '0'
+     * sono solo 9 cifre (sotto la soglia di 13): il TID non viene mai toccato. Cambia solo quando la pos 10 è
+     * una cifra (intestazione spostata, frammento di esito dopo uno STX spurio): prima una sequenza iniziata
+     * prima della pos 11 veniva contata solo dalla pos 11 e un PAN poteva restare in chiaro (M9).
      */
     fun maskApplicationPayload(payload: ByteArray): ByteArray {
         val out = payload.copyOf()
@@ -80,7 +87,7 @@ object PanMasker {
             code == 'i' -> maskPanField(out)
             code in PAN_IF_NOT_KO -> if (!isKo(out)) maskPanField(out)
             code in NO_PAN -> Unit
-            else -> maskDigitRunsInPlace(out, from = BODY_OFFSET)   // 'S', U, K, codici sconosciuti, payload corti
+            else -> maskDigitRunsInPlace(out, from = 0)   // 'S', U, K, codici sconosciuti o numerici, payload corti
         }
         return out
     }
@@ -132,13 +139,13 @@ object PanMasker {
     /** Solo '0'..'9': `Char.isDigit()` accetterebbe anche cifre Unicode che sul filo ASCII non esistono. */
     private fun Char.isAsciiDigit(): Boolean = this in '0'..'9'
 
-    private fun isAsciiDigit(b: Byte): Boolean = b in '0'.code.toByte()..'9'.code.toByte()
+    private fun isAsciiDigit(b: Byte): Boolean = (b.toInt() and 0xFF) in DIGIT_0..DIGIT_9
 
     /** Esito "01" in pos 11-12 = ramo KO: lì in pos 13 c'è la descrizione dell'errore, non il PAN. */
     private fun isKo(payload: ByteArray): Boolean =
         payload.size >= RESULT_OFFSET + 2 &&
-            payload[RESULT_OFFSET] == '0'.code.toByte() &&
-            payload[RESULT_OFFSET + 1] == '1'.code.toByte()
+            (payload[RESULT_OFFSET].toInt() and 0xFF) == '0'.code &&
+            (payload[RESULT_OFFSET + 1].toInt() and 0xFF) == '1'.code
 
     /** maskFixedWidth sul campo PAN (pos 13 len 19), sulla parte presente se il payload è troncato. */
     private fun maskPanField(payload: ByteArray) {

@@ -42,8 +42,8 @@ class FrameCodec(val appMode: LrcMode, val controlRule: ControlLrcRule) {
     fun decode(frame: ByteArray): DecodedPacket {
         if (frame.isEmpty()) return unknown()
         return when (frame[0].toInt() and 0xFF) {
-            ControlChars.ACK -> DecodedPacket(PacketType.ACK, EMPTY, validLrc = true)
-            ControlChars.NAK -> DecodedPacket(PacketType.NAK, EMPTY, validLrc = true)
+            ControlChars.ACK -> DecodedPacket(type = PacketType.ACK, payload = EMPTY, validLrc = true)
+            ControlChars.NAK -> DecodedPacket(type = PacketType.NAK, payload = EMPTY, validLrc = true)
             ControlChars.SOH -> decodeProgress(frame)
             ControlChars.STX -> decodeApplication(frame)
             else -> unknown()
@@ -55,7 +55,7 @@ class FrameCodec(val appMode: LrcMode, val controlRule: ControlLrcRule) {
     /** SOH … EOT: nessun LRC; la lunghezza del testo non è verificata (il progress Ingenico ne ha 20). */
     private fun decodeProgress(frame: ByteArray): DecodedPacket {
         if (frame.size < 2 || (frame[frame.size - 1].toInt() and 0xFF) != ControlChars.EOT) return unknown()
-        return DecodedPacket(PacketType.PROGRESS, frame.copyOfRange(1, frame.size - 1), validLrc = true)
+        return DecodedPacket(type = PacketType.PROGRESS, payload = frame.copyOfRange(1, frame.size - 1), validLrc = true)
     }
 
     /**
@@ -73,10 +73,10 @@ class FrameCodec(val appMode: LrcMode, val controlRule: ControlLrcRule) {
         if (etx < 0 || etx + 2 != frame.size) return unknown()
         val payload = frame.copyOfRange(1, etx)
         val received = frame[etx + 1].toInt() and 0xFF
-        return DecodedPacket(PacketType.APPLICATION, payload, validLrc = received == appMode.compute(payload))
+        return DecodedPacket(type = PacketType.APPLICATION, payload = payload, validLrc = received == appMode.compute(payload))
     }
 
-    private fun unknown() = DecodedPacket(PacketType.UNKNOWN, EMPTY, validLrc = false)
+    private fun unknown() = DecodedPacket(type = PacketType.UNKNOWN, payload = EMPTY, validLrc = false)
 
     private companion object {
         /** Mai esposto direttamente: [DecodedPacket.payload] di ACK/NAK/UNKNOWN è sempre un array nuovo. */
