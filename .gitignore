@@ -16,3 +16,6 @@ local.properties
 # OS
 Thumbs.db
 .DS_Store
+
+# Claude Code: worktree temporanei dei workflow
+.claude/worktrees/
