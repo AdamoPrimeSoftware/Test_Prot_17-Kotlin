@@ -29,7 +29,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -38,13 +37,13 @@ import androidx.compose.ui.unit.dp
 import it.prime.protocollo17.presentation.components.AppVerticalScrollbar
 import it.prime.protocollo17.presentation.components.CommandLetterChip
 import it.prime.protocollo17.presentation.components.CopyIconButton
+import it.prime.protocollo17.presentation.components.copyText
 import it.prime.protocollo17.presentation.components.toneColor
 import it.prime.protocollo17.presentation.model.HistoryRowView
 import it.prime.protocollo17.presentation.model.ResultTone
 import it.prime.protocollo17.presentation.screen.console.viewModel.ConsoleAction
 import it.prime.protocollo17.presentation.theme.PreviewTheme
 import kotlinx.coroutines.launch
-import java.awt.datatransfer.StringSelection
 
 /**
  * Scheda Cronologia (§6.7, R25): il log decodificato di tutte le operazioni della sessione, come il riquadro "Log"
@@ -78,9 +77,7 @@ fun HistoryPanel(rows: List<HistoryRowView>, historyText: String, onAction: (Con
                 items(rows, key = { it.id }) { row ->
                     ContextMenuArea(items = {
                         listOf(
-                            ContextMenuItem("Copia riga") {
-                                scope.launch { runCatching { clipboard.setClipEntry(ClipEntry(StringSelection(row.asText()))) } }
-                            },
+                            ContextMenuItem("Copia riga") { scope.launch { clipboard.copyText(row.asText()) } },
                         )
                     }) {
                         HistoryRow(row, onClick = { onAction(ConsoleAction.ShowHistoryItem(row.id)) })

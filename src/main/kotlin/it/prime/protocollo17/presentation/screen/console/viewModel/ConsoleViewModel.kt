@@ -217,12 +217,15 @@ class ConsoleViewModel(
                 val text = historyTextOf(state.history)
                 trimCaches(state)
                 _uiState.update {
+                    // Il comando è finito mentre si decideva se interromperlo: la domanda non ha più senso.
+                    val staleCancel = state.running == null && it.dialog is ConsoleDialog.ConfirmCancelAfterSend
                     it.copy(
                         running = state.running,
                         results = results,
                         history = rows,
                         historyText = text,
                         connection = it.connection.copy(lastSeenTerminalId = state.lastSeenTerminalId),
+                        dialog = if (staleCancel) null else it.dialog,
                     )
                 }
             }
@@ -386,12 +389,19 @@ class ConsoleViewModel(
 
     private fun pingStatus() {
         if (_uiState.value.busy) return
-        if (start(StatusRequest)) pingPending = true
+        if (start(StatusRequest, showResult = false)) pingPending = true
     }
 
-    /** Un solo punto verso il runner: rifiuti tradotti in evento o dialog (M7: mai accodare). true = partito. */
-    private fun start(request: Ecr17Request): Boolean = when (val result = runner.run(request, RunOrigin.CONSOLE)) {
-        RunStart.Started -> true
+    /**
+     * Un solo punto verso il runner: rifiuti tradotti in evento o dialog (M7: mai accodare). true = partito.
+     * [showResult]: il pannello torna alla scheda Esito (e lascia la voce di cronologia che si stava guardando),
+     * così l'esito del comando appena lanciato è quello visibile; F5 no, il suo esito arriva come avviso.
+     */
+    private fun start(request: Ecr17Request, showResult: Boolean = true): Boolean = when (val result = runner.run(request, RunOrigin.CONSOLE)) {
+        RunStart.Started -> {
+            if (showResult) _uiState.update { it.copy(viewedHistory = null, resultTab = ResultTab.RESULT) }
+            true
+        }
         RunStart.Busy, is RunStart.InvalidConfig -> {
             FailureMessages.forRunStart(result)?.let { emit(ConsoleEvent.ShowError(it)) }
             false

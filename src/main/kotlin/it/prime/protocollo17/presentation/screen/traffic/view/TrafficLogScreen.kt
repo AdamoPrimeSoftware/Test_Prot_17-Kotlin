@@ -49,7 +49,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -60,6 +59,7 @@ import it.prime.protocollo17.domain.model.traffic.TrafficSeverity
 import it.prime.protocollo17.presentation.components.AppVerticalScrollbar
 import it.prime.protocollo17.presentation.components.CopyIconButton
 import it.prime.protocollo17.presentation.components.TooltipIconButton
+import it.prime.protocollo17.presentation.components.copyText
 import it.prime.protocollo17.presentation.components.WithTooltip
 import it.prime.protocollo17.presentation.screen.traffic.viewModel.TrafficFilter
 import it.prime.protocollo17.presentation.screen.traffic.viewModel.TrafficLogAction
@@ -68,7 +68,6 @@ import it.prime.protocollo17.presentation.theme.PreviewTheme
 import it.prime.protocollo17.presentation.theme.WarningAmber
 import it.prime.protocollo17.presentation.util.formatTimeMillis
 import kotlinx.coroutines.launch
-import java.awt.datatransfer.StringSelection
 
 /**
  * Finestra Log traffico (§6.12): frame TX/RX in hex con la resa ASCII ed eventi dello scambio, filtrabili.
@@ -187,7 +186,7 @@ private fun TrafficRow(entry: TrafficEntry, showAscii: Boolean) {
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     fun copy(text: String) {
-        scope.launch { runCatching { clipboard.setClipEntry(ClipEntry(StringSelection(text))) } }
+        scope.launch { clipboard.copyText(text) }
     }
     ContextMenuArea(items = {
         buildList {

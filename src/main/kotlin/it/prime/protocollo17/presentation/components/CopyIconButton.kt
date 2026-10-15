@@ -17,9 +17,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.Clipboard
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.unit.dp
 import it.prime.protocollo17.presentation.theme.PreviewTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.awt.datatransfer.StringSelection
@@ -51,7 +53,7 @@ fun CopyIconButton(text: String, modifier: Modifier = Modifier, contentDescripti
         IconButton(
             onClick = {
                 scope.launch {
-                    val ok = runCatching { clipboard.setClipEntry(ClipEntry(StringSelection(text))) }.isSuccess
+                    val ok = clipboard.copyText(text)
                     copiedTick = if (ok) copiedTick + 1 else 0
                 }
             },
@@ -65,6 +67,19 @@ fun CopyIconButton(text: String, modifier: Modifier = Modifier, contentDescripti
             )
         }
     }
+}
+
+/**
+ * Copia testo negli appunti; false se la clipboard non è disponibile (bloccata da un'altra app su Windows).
+ * try/catch e non runCatching: è codice suspend, e un runCatching inghiottirebbe anche la CancellationException.
+ */
+suspend fun Clipboard.copyText(text: String): Boolean = try {
+    setClipEntry(ClipEntry(StringSelection(text)))
+    true
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    false
 }
 
 @Suppress("unused")

@@ -90,9 +90,11 @@ internal class FakeCommandRunner : CommandRunner {
         return run
     }
 
-    /** Stato arbitrario (cronologia precaricata, comando in una certa fase). */
+    /** Stato arbitrario (cronologia precaricata, comando in una certa fase). Gli id restano monotoni come nel servizio. */
     fun setState(state: RunnerState) {
         _state.value = state
+        val maxId = (state.history + state.lastByCommand.values).maxOfOrNull { it.id } ?: 0
+        nextId = maxOf(nextId, maxId + 1)
     }
 
     override fun requestCancel(): CancelResult {

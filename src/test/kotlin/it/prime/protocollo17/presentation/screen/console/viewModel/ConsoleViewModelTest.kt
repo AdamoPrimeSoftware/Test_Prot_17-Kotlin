@@ -270,6 +270,19 @@ class ConsoleViewModelTest {
         assertTrue(dialog.message.contains("Verifica carta"), dialog.message)
     }
 
+    /** Se il pagamento finisce mentre l'operatore decide, la domanda "interrompere?" sparisce: non c'è più nulla da annullare. */
+    @Test
+    fun `la conferma di annullamento si chiude se il comando finisce`() {
+        val vm = vm()
+        vm.onAction(ConsoleAction.RunSelected)
+        runner.setPhase(ExchangePhase.AWAITING_RESULT)
+        vm.onAction(ConsoleAction.RequestCancel)
+        assertTrue(vm.uiState.value.dialog is ConsoleDialog.ConfirmCancelAfterSend)
+        runner.finish(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment()))
+        assertNull(vm.uiState.value.dialog)
+        assertEquals(0, runner.cancelCalls)
+    }
+
     /** Prima dell'invio annullare è innocuo: nessuna conferma. */
     @Test
     fun `RequestCancel prima dell'invio annulla subito`() {
@@ -372,9 +385,17 @@ class ConsoleViewModelTest {
         assertEquals(ResultTab.RESULT, vm.uiState.value.resultTab)
         vm.onAction(ConsoleAction.ShowHistoryItem(null))
         assertNull(vm.uiState.value.viewedHistory)
+        // Un nuovo comando riporta in vista il proprio esito, non la voce di cronologia che si stava guardando.
+        vm.onAction(ConsoleAction.ShowHistoryItem(1))
+        vm.onAction(ConsoleAction.SetResultTab(ResultTab.HISTORY))
+        vm.onAction(ConsoleAction.RunSelected)
+        assertNull(vm.uiState.value.viewedHistory)
+        assertEquals(ResultTab.RESULT, vm.uiState.value.resultTab)
+        runner.finish(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment()))
         vm.onAction(ConsoleAction.ClearHistory)
         assertEquals(1, runner.clearHistoryCalls)
         assertTrue(vm.uiState.value.history.isEmpty())
+        assertNotNull(vm.uiState.value.results[CommandCode.PAYMENT], "svuotare la cronologia non cancella l'ultimo esito per comando")
     }
 
     // ─── Intestazione e simulatore ────────────────────────────────────────────────
