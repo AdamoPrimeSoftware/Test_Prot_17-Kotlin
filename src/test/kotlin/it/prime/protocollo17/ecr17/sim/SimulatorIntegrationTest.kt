@@ -470,6 +470,31 @@ class SimulatorIntegrationTest {
         assertTrue(acknowledged.trace.receipt.last().isEnd)
     }
 
+    /**
+     * Prima: con closeAfterTransaction il simulatore chiudeva anche dopo E1, che l'ECR manda sulla STESSA connessione
+     * subito prima del pagamento, e con "stampa su ECR" attiva ogni pagamento finiva su un socket chiuso. Ora E1
+     * prepara la procedura successiva e la connessione si chiude solo dopo il pagamento.
+     */
+    @Test
+    fun `IT-27 closeAfterTransaction con stampa su ECR chiude dopo il pagamento, non dopo E1`() = realTime {
+        val (sim, port) = simulator(fastSim { it.copy(closeAfterTransaction = true) })
+        val options = ingenico.copy(ecrPrinting = true, connectionMode = ConnectionMode.PERSISTENT)
+        val client = client(port, options)
+        val first = answered(client.pay(PaymentRequest(amountCents = 650)))
+        client.linkState.first { it is LinkState.Closed }
+        val second = answered(client.pay(PaymentRequest(amountCents = 100)))
+
+        listOf(first, second).forEach {
+            assertEquals(Verdict.APPROVED, payment(it).verdict)
+            assertEquals(4, it.trace.receipt.size, "righe dello scontrino: ${it.trace.receipt}")
+        }
+        // Con la connessione persistente due connessioni provano che il simulatore ha chiuso dopo il primo pagamento.
+        val state = sim.snapshot()
+        assertEquals(2, state.connections, "riconnessione dopo la chiusura a fine pagamento")
+        assertEquals(2, state.received('E'))
+        assertEquals(2, state.received('P'))
+    }
+
     private companion object {
         const val CLEAR_PAN = "4111111111111111"
         const val TEST_TIMEOUT_MS = 20_000L

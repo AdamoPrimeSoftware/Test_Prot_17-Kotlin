@@ -409,11 +409,13 @@ class SimResponderTest {
         assertEquals(SimResponder.ECR_REPLY_WAIT_MS, plain.waitMs)
     }
 
+    /** E1 non è una transazione: l'ECR manda il comando vero sulla stessa connessione subito dopo (IT-27). */
     @Test
-    fun `SR-21 closeAfterTransaction chiude dopo una transazione completa, non dopo un NAK`() {
+    fun `SR-21 closeAfterTransaction chiude dopo una transazione completa, non dopo E1 o un NAK`() {
         val config = SimulatorConfig(closeAfterTransaction = true)
         assertTrue(respond(StatusRequest, config).closeAfter)
-        assertTrue(respond(EcrPrintingRequest(enabled = true), config).closeAfter)
+        assertTrue(respond(ReprintRequest(), config).closeAfter)
+        assertFalse(respond(EcrPrintingRequest(enabled = true), config).closeAfter, "E1 prepara la procedura successiva")
         val rejected = SimResponder.respond(frame(StatusRequest, mode = LrcMode.STD), config, SimMemory(), now)
         assertFalse(rejected.closeAfter)
     }

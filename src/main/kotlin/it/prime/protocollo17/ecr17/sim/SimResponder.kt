@@ -248,7 +248,9 @@ internal object SimResponder {
                 b.close(ackAt, "DROP_AFTER_RESULT: chiusura subito dopo l'ACK")
                 return b.build(mem)
             }
-            return b.build(mem, closeAfter = config.closeAfterTransaction)
+            // E prepara la procedura successiva, che l'ECR invia sulla STESSA connessione (§3.23 punto 6): chiudere
+            // qui farebbe fallire ogni comando con la stampa su ECR attiva. La transazione è quella che segue.
+            return b.build(mem, closeAfter = config.closeAfterTransaction && code != 'E')
         }
 
         // ─── Comandi con esito ───
