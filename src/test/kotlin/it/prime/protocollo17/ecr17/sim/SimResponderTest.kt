@@ -429,6 +429,20 @@ class SimResponderTest {
         assertEquals(listOf(OutKind.PROGRESS, OutKind.RESULT), faulty(SimFault.PROGRESS_NO_ACK).kinds)
     }
 
+    /**
+     * Prima: il progress partiva solo se più rapido dell'esito, quindi con resultDelayMs < progressDelayMs (valori
+     * scelti dall'operatore) PROGRESS_NO_ACK diventava un NO_ACK e l'ECR in RETRANSMIT ritrasmetteva il pagamento.
+     * Ora il progress precede sempre l'esito.
+     */
+    @Test
+    fun `SR-32 PROGRESS_NO_ACK invia il progress anche con un esito più rapido del progress`() {
+        val config = SimulatorConfig(fault = SimFault.PROGRESS_NO_ACK, progressDelayMs = 400, resultDelayMs = 100)
+        val plan = respond(PaymentRequest(amountCents = 10), config)
+
+        assertEquals(listOf(OutKind.PROGRESS, OutKind.RESULT), plan.kinds)
+        assertEquals(listOf(100L, 100L), plan.sends.map { it.atMs }, "progress al più tardi insieme all'esito")
+    }
+
     @Test
     fun `SR-23 SILENT, NO_RESULT, DROP_AFTER_REQUEST e DROP_AFTER_ACK non producono esiti`() {
         val silent = faulty(SimFault.SILENT)

@@ -264,8 +264,14 @@ internal object SimResponder {
         val outcome = compute(code, text, config, mem, now)
         mem = outcome.memory
 
-        val noProgress = fault == SimFault.NO_ACK || fault == SimFault.BARE_NAK || fault == SimFault.BARE_ACK
-        if (!noProgress && progressAt < resultAt) b.progress(progressAt, config)
+        when {
+            fault == SimFault.NO_ACK || fault == SimFault.BARE_NAK || fault == SimFault.BARE_ACK -> Unit
+            // Il progress È il guasto (ACK implicito, §4.5): con un esito più rapido del progress PROGRESS_NO_ACK
+            // diventerebbe in silenzio un NO_ACK, quindi il progress parte al più tardi insieme all'esito.
+            fault == SimFault.PROGRESS_NO_ACK -> b.progress(minOf(progressAt, resultAt), config)
+            // Un comando che risponde prima del progress (s, T, G veloci) non lo manda: niente frame inutili.
+            progressAt < resultAt -> b.progress(progressAt, config)
+        }
 
         if (fault == SimFault.LATE_RESULT_AFTER_NEXT_SEND) {
             b.note("LATE_RESULT_AFTER_NEXT_SEND: esito di '$code' trattenuto fino alla richiesta successiva")

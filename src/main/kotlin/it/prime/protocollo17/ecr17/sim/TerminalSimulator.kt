@@ -4,6 +4,7 @@ import it.prime.protocollo17.ecr17.wire.Hex
 import it.prime.protocollo17.ecr17.wire.PanMasker
 import it.prime.protocollo17.ecr17.wire.WireFrame
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -122,7 +123,12 @@ class TerminalSimulator(
             throw e
         }
         val port = server.localPort
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("p17-sim"))
+        // ecr17 non logga (§2.10): un errore sfuggito a una coroutine del simulatore finisce nel suo log come Note,
+        // invece che sullo stderr del processo dove l'operatore non lo vedrebbe mai.
+        val crashNote = CoroutineExceptionHandler { _, e ->
+            core.note("Errore interno del simulatore: ${e.message ?: e::class.java.simpleName}")
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("p17-sim") + crashNote)
         val run = Running(server, scope, port)
         core.stopping = false
         running = run
@@ -222,8 +228,9 @@ class TerminalSimulator(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // Un bug nel simulatore chiude la connessione, mai il server: lo si vede nel log.
-            core.note("Errore del simulatore sulla connessione $remote: ${e.message ?: e::class.java.simpleName}")
+            // Un bug nel simulatore chiude la connessione, mai il server: lo si vede nel log. Durante stop() il socket
+            // è già chiuso e l'errore è la conseguenza attesa, non un guasto da segnalare.
+            if (!core.stopping) core.note("Errore del simulatore sulla connessione $remote: ${e.message ?: e::class.java.simpleName}")
         } finally {
             run.unregister(socket)
             closeQuietly(socket)
