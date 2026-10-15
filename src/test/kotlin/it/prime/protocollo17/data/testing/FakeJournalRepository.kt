@@ -12,9 +12,12 @@ import it.prime.protocollo17.ecr17.model.CommandOutcome
 import it.prime.protocollo17.ecr17.model.Ecr17Request
 import it.prime.protocollo17.ecr17.profile.Ecr17Config
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -32,9 +35,16 @@ class FakeJournalRepository : JournalRepository {
     @Volatile var failBegin: Exception? = null
     @Volatile var failFinish: Exception? = null
 
-    /** Se impostato, begin attende il gate (cancellabile) prima di scrivere: simula un fsync lento. */
+    /**
+     * Se impostato, begin attende il gate prima di scrivere: simula un fsync lento. L'attesa è in NonCancellable come
+     * nel journal reale (§5.3.3): prima era cancellabile, begin lanciava CancellationException e i test
+     * sull'annullamento durante begin passavano anche senza il controllo di cancellazione dopo begin.
+     */
     @Volatile var beginGate: CompletableDeferred<Unit>? = null
     val beginEntered = CompletableDeferred<Unit>()
+
+    /** Contato alla prima chiamata di finish: un test può attenderlo bloccando il thread, senza sospendere. */
+    val finishEntered = CountDownLatch(1)
 
     private val ids = AtomicInteger(0)
     private val lock = Any()
@@ -66,7 +76,7 @@ class FakeJournalRepository : JournalRepository {
     override suspend fun begin(attemptId: String, request: Ecr17Request, config: Ecr17Config) {
         calls += "begin:$attemptId"
         beginEntered.complete(Unit)
-        beginGate?.await()
+        beginGate?.let { gate -> withContext(NonCancellable) { gate.await() } }
         failBegin?.let { throw it }
         add(attemptId, JournalPhase.CREATED) { it.copy(command = request.command.wire.toString(), amountCents = null) }
     }
@@ -85,6 +95,7 @@ class FakeJournalRepository : JournalRepository {
     override suspend fun finish(attemptId: String, outcome: CommandOutcome?) {
         calls += "finish:$attemptId:" + (outcome?.let { it::class.simpleName } ?: "null")
         finishCalls += attemptId to outcome
+        finishEntered.countDown()
         synchronized(lock) {
             val list = records[attemptId] ?: return
             failFinish?.let {

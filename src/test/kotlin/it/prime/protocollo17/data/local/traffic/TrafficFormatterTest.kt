@@ -76,6 +76,26 @@ class TrafficFormatterTest {
         assertEquals(listOf("$ts: Discard:ff 00 | NOISE"), lines(event), "scarto")
     }
 
+    /**
+     * L'export della finestra Log produce le stesse righe del file giornaliero per lo stesso evento, così le tracce
+     * esportate si confrontano con diff. Prima uno scarto diventava "Discard:ff 00 | Scartati 2 byte: NOISE" e un
+     * esito ricevuto perdeva la riga Info.
+     */
+    @Test
+    fun `export delle voci identico alle righe del file per scarti e frame`() {
+        val events = listOf(
+            ProtocolEvent.Discarded(20, at, 12, byteArrayOf(0xFF.toByte(), 0x00), DiscardReason.NOISE),
+            ProtocolEvent.Wire(21, at, 12, FrameDirection.RX, FrameKind.APPLICATION, 'E', Frames.app(Frames.E22), null, "LRC 21 ok (stx)"),
+            ProtocolEvent.Wire(22, at, 12, FrameDirection.RX, FrameKind.ACK, null, Frames.ACKW, null, "LRC 7A, WIRE"),
+            ProtocolEvent.Wire(23, at, 12, FrameDirection.TX, FrameKind.APPLICATION, 'P', Frames.app(Frames.P1), 1, "LRC 2F (stx)"),
+            ProtocolEvent.Warning(24, at, 12, ProtocolWarning(WarningCode.IMPLICIT_GO_AHEAD, "attendo", at)),
+        )
+        for (event in events) {
+            val entry = TrafficFormatter.toEntry(event) { 'P' }!!
+            assertEquals(lines(event), TrafficFormatter.exportLines(entry, utc), "export di ${event::class.simpleName} ${entry.kind}")
+        }
+    }
+
     @Test
     fun `voce della finestra con hex maiuscolo e lettera del comando`() {
         val event = ProtocolEvent.Wire(5, at, 12, FrameDirection.RX, FrameKind.ACK, null, Frames.ACKW, null, "LRC 7A, WIRE")

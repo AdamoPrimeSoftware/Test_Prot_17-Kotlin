@@ -30,8 +30,8 @@ import java.util.UUID
  *
  * Lo stato in memoria rispecchia SOLO ciò che è su disco: un record il cui append è fallito non entra nella
  * lista dei record, e l'entry è marcata `persisted = false` con fase UNKNOWN. Un append successivo riuscito
- * sullo stesso tentativo ripristina il fold normale: il blocco resta solo finché il disco non contiene una
- * chiusura del tentativo.
+ * sullo stesso tentativo ripristina il fold normale, tranne una prova EVIDENCE (non porta una fase): il blocco
+ * resta solo finché il disco non contiene una chiusura del tentativo.
  *
  * Tutte le scritture girano in NonCancellable sotto un unico [mutex]: un record scritto è sempre anche
  * pubblicato in [entries]/[unresolved], anche se il chiamante viene annullato a metà.
@@ -253,7 +253,11 @@ class JournalRepositoryImpl(
             return
         }
         attempt.records += record
-        attempt.persisted = true
+        // Solo un record che porta una fase ripristina il fold. Prima anche una prova EVIDENCE riuscita rimetteva
+        // persisted = true: un'entry forzata a UNKNOWN (finish non scritto) tornava alla fase in volo dell'ultimo
+        // record su disco, usciva da `unresolved` e sbloccava i pagamenti senza alcuna chiusura sul disco (M6).
+        // EVIDENCE non cambia mai la fase (§5.3.1), quindi non può nemmeno sbloccare.
+        if (record.phase != JournalPhase.EVIDENCE) attempt.persisted = true
     }
 
     /**

@@ -203,8 +203,17 @@ class JournalRepositoryImplTest {
         assertTrue(errorOf { repo.finish(id, OutcomeFixtures.answered()) } is IOException, "finish rilancia")
         assertEquals(id, repo.unresolved.value.single().attemptId, "ancora bloccante")
 
-        // Un append successivo riuscito ripristina il fold normale.
+        // Il disco torna: una prova EVIDENCE scritta (orfano ricevuto durante un 's') NON sblocca. Prima il fold
+        // tornava alla fase in volo dell'ultimo record su disco (SENDING) e il pagamento usciva da unresolved.
         failing.failAppends = false
+        repo.attachEvidence(id, Frames.E22, "orfano")
+        val withEvidence = repo.unresolved.value.single()
+        assertEquals(id, withEvidence.attemptId, "ancora bloccante dopo la prova")
+        assertEquals(JournalPhase.UNKNOWN, withEvidence.phase, "fase ancora forzata")
+        assertFalse(withEvidence.persisted, "persisted resta false: nessuna chiusura su disco")
+        assertEquals(JournalPhase.EVIDENCE, withEvidence.records.last().phase, "prova registrata")
+
+        // Un append successivo riuscito di un record con una fase ripristina il fold normale.
         repo.finish(id, OutcomeFixtures.answered())
         val restored = repo.entries.value.single()
         assertTrue(restored.persisted, "persisted ripristinato")

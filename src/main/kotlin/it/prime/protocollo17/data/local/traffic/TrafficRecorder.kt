@@ -14,6 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -76,6 +77,13 @@ class TrafficRecorder(
     private var writerDate: LocalDate? = null
     private var fileErrorLogged = false
 
+    /**
+     * Impostato da close() sotto [writerLock]: da lì in poi nessuna scrittura riapre il file. Prima un consumatore
+     * con un arretrato oltre l'attesa di close() (un canale chiuso ma non vuoto non sospende, quindi non vede la
+     * cancellazione) riapriva un BufferedWriter DOPO close(): handle mai chiuso, file del giorno bloccato su Windows.
+     */
+    private var writerClosed = false
+
     private val _currentFile = MutableStateFlow(if (settingsProvider().fileEnabled) fileFor(wallClock()) else null)
     override val currentFile: StateFlow<File?> = _currentFile.asStateFlow()
 
@@ -86,9 +94,12 @@ class TrafficRecorder(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Char>?): Boolean = size > COMMANDS_CAP
     }
 
-    private val consumer: Job = scope.launch {
+    /** Interno per i test: close() con un arretrato oltre l'attesa. */
+    internal val consumer: Job = scope.launch {
         runRetention(protectedName = null)
         for (first in events) {
+            // Dopo l'attesa scaduta di close() lo scope è annullato: l'arretrato si scarta invece di girare a vuoto.
+            ensureActive()
             process(first)
             var batch = 1
             while (batch < MAX_BATCH) {
@@ -128,7 +139,7 @@ class TrafficRecorder(
     override suspend fun export(target: File, entries: List<TrafficEntry>): Result<Int> = withContext(Dispatchers.IO) {
         val part = File(target.absoluteFile.parentFile, target.name + ".part")
         try {
-            val lines = entries.map { TrafficFormatter.toFileLine(it, zone) }
+            val lines = entries.flatMap { TrafficFormatter.exportLines(it, zone) }
             target.absoluteFile.parentFile?.mkdirs()
             part.writeText(lines.joinToString(separator = System.lineSeparator(), postfix = System.lineSeparator()), Charsets.UTF_8)
             try {
@@ -153,7 +164,10 @@ class TrafficRecorder(
         events.close()
         runBlocking { withTimeoutOrNull(CLOSE_TIMEOUT_MS) { consumer.join() } }
         scope.cancel()
-        synchronized(writerLock) { closeWriterLocked() }
+        synchronized(writerLock) {
+            writerClosed = true
+            closeWriterLocked()
+        }
     }
 
     // ─── Consumatore ───────────────────────────────────────────────────────────
@@ -192,6 +206,7 @@ class TrafficRecorder(
     private fun write(event: ProtocolEvent) {
         val lines = TrafficFormatter.toFileLines(event, zone)
         synchronized(writerLock) {
+            if (writerClosed) return
             try {
                 val date = Instant.ofEpochMilli(event.at).atZone(zone).toLocalDate()
                 val w = writer.takeIf { writerDate == date } ?: rotateLocked(event.at, date)
@@ -222,6 +237,7 @@ class TrafficRecorder(
 
     private fun flushWriter() {
         synchronized(writerLock) {
+            if (writerClosed) return
             try {
                 writer?.flush()
             } catch (e: IOException) {

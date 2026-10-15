@@ -29,6 +29,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -78,7 +80,10 @@ class TerminalSessionServiceTest {
             val attemptId = if (request.command.journaled) journal.newAttemptId() else null
             var outcome: CommandOutcome? = null
             try {
-                if (attemptId != null) journal.begin(attemptId, request, resolution.config)
+                if (attemptId != null) {
+                    journal.begin(attemptId, request, resolution.config)
+                    currentCoroutineContext().ensureActive() // come PosTerminalRepositoryImpl: begin è NonCancellable
+                }
                 emit(CommandProgress.Started(request.command, attemptId, 0))
                 clientExecutions.incrementAndGet()
                 exchange(request, attemptId)
@@ -205,11 +210,14 @@ class TerminalSessionServiceTest {
      */
     @Test
     fun `annullamento durante journal begin non esegue il client e chiude il tentativo`() {
-        journal.beginGate = CompletableDeferred()
+        val gate = CompletableDeferred<Unit>()
+        journal.beginGate = gate
         service.run(pay, RunOrigin.CONSOLE)
         awaitTrue("begin in corso") { journal.beginEntered.isCompleted }
 
         assertEquals(CancelResult.CANCELLED_BEFORE_SEND, service.requestCancel(), "annullato prima dell'invio")
+        // begin attende in NonCancellable come il journal reale: l'fsync finisce dopo la richiesta di annullamento.
+        gate.complete(Unit)
         awaitIdle()
 
         assertEquals(0, repo.clientExecutions.get(), "client mai eseguito")

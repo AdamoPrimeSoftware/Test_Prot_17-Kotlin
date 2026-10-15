@@ -15,6 +15,7 @@ import it.prime.protocollo17.ecr17.testing.Frames
 import it.prime.protocollo17.ecr17.wire.DiscardReason
 import it.prime.protocollo17.ecr17.wire.PanMasker
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -23,6 +24,8 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class TrafficRecorderTest {
 
@@ -166,6 +169,33 @@ class TrafficRecorderTest {
         assertTrue(lines[0].endsWith(": Data Tx:02 30 03 2f "), "frame in forma DLL: ${lines[0]}")
         assertTrue(lines[1].endsWith(": Warn   :#12 IMPLICIT_GO_AHEAD attendo"), "avviso: ${lines[1]}")
         assertFalse(File(dir, "export/traccia.txt.part").exists(), "nessun .part residuo")
+    }
+
+    /**
+     * Prima: con un arretrato oltre l'attesa di 1 s di close(), il consumatore continuava (un canale chiuso ma non
+     * vuoto non sospende e non vede la cancellazione) e la write successiva riapriva il file DOPO close(): un handle
+     * mai chiuso, con il file del giorno bloccato su Windows. Qui il consumatore resta fermo nella retention iniziale
+     * (settingsProvider bloccato fuori dal thread del test) finché close() non è tornata.
+     */
+    @Test
+    fun `close con arretrato oltre l'attesa non riapre mai il file`() {
+        val testThread = Thread.currentThread()
+        val release = CountDownLatch(1)
+        val rec = TrafficRecorder(
+            dir,
+            settingsProvider = {
+                if (Thread.currentThread() !== testThread) release.await(10, TimeUnit.SECONDS)
+                settings
+            },
+            wallClock = { noon },
+        )
+        repeat(3) { rec.onEvent(progress("arretrato $it")) }
+
+        rec.close() // attesa massima di 1 s scaduta: il consumatore è ancora fermo
+        release.countDown()
+        runBlocking { withTimeout(5_000) { rec.consumer.join() } }
+
+        assertFalse(File(dir, fileName(today)).exists(), "nessun file riaperto dopo close()")
     }
 
     @Test

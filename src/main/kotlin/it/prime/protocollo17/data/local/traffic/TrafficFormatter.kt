@@ -11,6 +11,7 @@ import it.prime.protocollo17.ecr17.model.CloseCause
 import it.prime.protocollo17.ecr17.model.ExchangePhase
 import it.prime.protocollo17.ecr17.model.LinkState
 import it.prime.protocollo17.ecr17.model.OutcomeClass
+import it.prime.protocollo17.ecr17.wire.ControlChars
 import it.prime.protocollo17.ecr17.wire.Hex
 import java.time.Instant
 import java.time.LocalDate
@@ -93,12 +94,13 @@ object TrafficFormatter {
         return when (event) {
             is ProtocolEvent.Wire -> buildList {
                 add(line(if (event.direction == FrameDirection.TX) "Data Tx" else "Data Rx", dllHex(event.bytes)))
-                // Come nella traccia di esempio: sotto un frame applicativo ricevuto, l'esito della verifica LRC.
-                if (event.direction == FrameDirection.RX && event.kind == FrameKind.APPLICATION && event.lrcNote != null) {
+                // Come nella traccia di esempio: sotto ogni frame applicativo ricevuto, codice ed esito della verifica
+                // LRC. Sempre, anche senza nota: l'export (che vede solo la voce) deve produrre le stesse righe.
+                if (event.direction == FrameDirection.RX && event.kind == FrameKind.APPLICATION) {
                     add(line(INFO, tagged(event.exchangeId, describe(event))))
                 }
             }
-            is ProtocolEvent.Discarded -> listOf(line("Discard", dllHex(event.bytes) + "| " + event.reason.name))
+            is ProtocolEvent.Discarded -> listOf(line("Discard", dllHex(event.bytes) + "| " + describe(event)))
             is ProtocolEvent.CommandStarted -> listOf(line(INFO, tagged(event.exchangeId, describe(event))))
             is ProtocolEvent.CommandFinished -> listOf(line(prefixOf(severityOf(event.outcome)), tagged(event.exchangeId, describe(event))))
             is ProtocolEvent.PhaseChanged -> listOf(line(INFO, tagged(event.change.exchangeId, describe(event))))
@@ -128,20 +130,33 @@ object TrafficFormatter {
     internal fun formatTimestamp(epochMs: Long, zone: ZoneId): String = timestamp.format(Instant.ofEpochMilli(epochMs).atZone(zone))
 
     /**
-     * Riga di file da una voce già formattata (export della finestra Log): i frame tornano nella forma della DLL
-     * (hex minuscolo con spazio finale), le altre voci usano il prefisso del loro tono.
+     * Righe di file da una voce già formattata (export della finestra Log), identiche a quelle di [toFileLines] per
+     * lo stesso evento: un'esportazione si confronta con `diff` con il file giornaliero e con il log della DLL.
+     * Prima l'export di uno scarto usava il riepilogo della finestra ("Scartati 2 byte: NOISE") e un frame
+     * applicativo ricevuto perdeva la riga Info sotto il `Data Rx`.
+     *
+     * I frame tornano nella forma della DLL (hex minuscolo con spazio finale); un RX che inizia con STX è un frame
+     * applicativo e riceve la sua riga Info; le altre voci usano il prefisso del loro tono.
      */
-    internal fun toFileLine(entry: TrafficEntry, zone: ZoneId): String {
+    internal fun exportLines(entry: TrafficEntry, zone: ZoneId): List<String> {
         val ts = formatTimestamp(entry.at, zone)
         val dllHex = entry.hex?.let { it.trim().lowercase() + " " }.orEmpty()
         val tag = entry.exchangeId?.let { "#$it " }.orEmpty()
         return when (entry.kind) {
-            TrafficKind.TX -> "$ts: Data Tx:$dllHex"
-            TrafficKind.RX -> "$ts: Data Rx:$dllHex"
-            TrafficKind.DISCARDED -> "$ts: Discard:$dllHex| ${entry.summary}"
-            else -> "$ts: ${prefixOf(entry.severity)}:$tag${entry.summary}"
+            TrafficKind.TX -> listOf("$ts: Data Tx:$dllHex")
+            TrafficKind.RX -> buildList {
+                add("$ts: Data Rx:$dllHex")
+                if (startsWithStx(entry.hex)) add("$ts: $INFO:$tag${entry.summary}")
+            }
+            // Il riepilogo di uno scarto è esattamente la coda della riga di file (il motivo): vedi describe(Discarded).
+            TrafficKind.DISCARDED -> listOf("$ts: Discard:$dllHex| ${entry.summary}")
+            else -> listOf("$ts: ${prefixOf(entry.severity)}:$tag${entry.summary}")
         }
     }
+
+    /** Primo byte dell'hex di una voce uguale a STX: frame applicativo (ACK/NAK/progress iniziano con 06/15/01). */
+    private fun startsWithStx(hex: String?): Boolean =
+        hex?.trimStart()?.take(2)?.toIntOrNull(16) == ControlChars.STX
 
     // ─── Testi ─────────────────────────────────────────────────────────────────
 
@@ -205,7 +220,11 @@ object TrafficFormatter {
         }
     }
 
-    private fun describe(event: ProtocolEvent.Discarded): String = "Scartati ${event.bytes.size} byte: ${event.reason.name}"
+    /**
+     * Solo il motivo: è la coda della riga `Discard:… | NOISE` del file (§5.4.2), e l'export la ricava dalla voce.
+     * Il numero di byte nella finestra Log si legge già dall'hex mostrato sotto il riepilogo.
+     */
+    private fun describe(event: ProtocolEvent.Discarded): String = event.reason.name
 
     private fun describe(event: ProtocolEvent.Progress): String = "progress \"${event.text}\""
 

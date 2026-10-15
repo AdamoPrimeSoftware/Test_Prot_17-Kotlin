@@ -25,6 +25,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.buffer
@@ -88,6 +89,11 @@ class PosTerminalRepositoryImpl(
                     send(CommandProgress.Finished(outcome!!, null, journalError = "journal non scrivibile: ${e.message}"))
                     return@channelFlow
                 }
+                // begin gira in NonCancellable (fsync, §5.3.3): un annullamento chiesto durante l'fsync (requestCancel
+                // prima dell'invio, R22) non lo fa lanciare. Senza questo controllo l'unico ostacolo prima del client
+                // era una corsa (il consumatore che chiude il canale prima di send): persa la corsa, un pagamento
+                // annullato prima dell'invio partiva lo stesso. Qui il finally chiude il tentativo come NOT_SENT.
+                ensureActive()
             }
             send(CommandProgress.Started(request.command, attemptId, now()))
             val listener = object : ExchangeListener {

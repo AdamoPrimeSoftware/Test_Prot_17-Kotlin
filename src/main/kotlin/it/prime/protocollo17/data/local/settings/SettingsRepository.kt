@@ -29,8 +29,20 @@ import java.util.concurrent.atomic.AtomicInteger
  * Replica di LocalDesktopAi (§5.2.3): caricamento difensivo (BOM rimosso; un file illeggibile viene copiato in
  * `settings.json.broken-<millis>` e mai sovrascritto senza copia), scrittura atomica `.part` + move, debounce di
  * 400 ms (una frase digitata in un campo diventa UNA scrittura), flush in [close] e nello shutdown hook.
+ *
+ * "Mai sovrascrivere senza copia" vale anche quando la copia non riesce o il file non si legge affatto (es. una
+ * violazione di condivisione di antivirus o OneDrive): prima si partiva dai default e il primo salvataggio (la
+ * geometria della finestra, quasi subito) cancellava host, porta e TID veri. Ora ogni salvataggio prova prima la
+ * copia e scrive solo se è riuscita.
  */
-class SettingsRepository(private val file: File) : AutoCloseable {
+class SettingsRepository internal constructor(
+    private val file: File,
+    /** Solo per il nome della copia `broken-<millis>`: i test lo fissano per occuparne il percorso. */
+    private val wallClock: () -> Long,
+) : AutoCloseable {
+
+    /** Il costruttore pubblico di §5.2.3. */
+    constructor(file: File) : this(file, System::currentTimeMillis)
 
     private val log = LoggerFactory.getLogger(SettingsRepository::class.java)
 
@@ -39,6 +51,15 @@ class SettingsRepository(private val file: File) : AutoCloseable {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
+
+    /**
+     * true se settings.json esiste ma non è stato letto (errore di I/O) o, rotto, non è stato copiato: in memoria ci
+     * sono i default e il file contiene ancora i valori veri. Finché resta true ogni salvataggio prova prima la copia
+     * in `broken-<millis>` e, se non riesce, non scrive. Dichiarata PRIMA di [_flow]: loadFromDisk la imposta
+     * durante l'inizializzazione, e un inizializzatore successivo la riporterebbe a false.
+     */
+    @Volatile
+    private var writeBlocked = false
 
     private val _flow = MutableStateFlow(loadFromDisk())
     val flow: StateFlow<AppSettings> = _flow.asStateFlow()
@@ -114,7 +135,11 @@ class SettingsRepository(private val file: File) : AutoCloseable {
         val raw = try {
             file.readText(Charsets.UTF_8)
         } catch (e: Exception) {
-            log.error("Lettura di {} fallita ({}): impostazioni di default", file.absolutePath, e.message)
+            writeBlocked = true
+            log.error(
+                "Lettura di {} fallita ({}): impostazioni di default; il file non verrà sovrascritto finché non se ne fa una copia",
+                file.absolutePath, e.message,
+            )
             return AppSettings()
         }
         // BOM UTF-8: lo scrivono alcuni editor e Set-Content -Encoding UTF8 di PowerShell 5.1.
@@ -122,22 +147,44 @@ class SettingsRepository(private val file: File) : AutoCloseable {
         return try {
             json.decodeFromString(AppSettings.serializer(), clean)
         } catch (e: Exception) {
-            val backup = File(file.parentFile, "${file.name}.broken-${System.currentTimeMillis()}")
-            log.error(
-                "Parsing di {} fallito ({}): copia in {} e impostazioni di default. Recupera i valori da quel file.",
-                file.name, e.message, backup.name,
-            )
-            try {
-                file.copyTo(backup, overwrite = false)
-            } catch (copyError: Exception) {
-                log.error("Copia di sicurezza di {} non riuscita: {}", file.name, copyError.message)
-            }
+            log.error("Parsing di {} fallito ({}): impostazioni di default. Recupera i valori dalla copia broken.", file.name, e.message)
+            if (!copyAside()) writeBlocked = true
             AppSettings()
+        }
+    }
+
+    /**
+     * Copia settings.json in `settings.json.broken-<millis>`. true se la copia esiste (o se il file non c'è più e
+     * non resta nulla da proteggere). Una copia parziale viene cancellata: una copia vuota sembrerebbe buona.
+     */
+    private fun copyAside(): Boolean {
+        if (!file.exists()) return true
+        val backup = File(file.parentFile, "${file.name}.broken-${wallClock()}")
+        if (backup.exists()) {
+            log.error("Copia di sicurezza di {} non riuscita: {} esiste già", file.name, backup.name)
+            return false
+        }
+        return try {
+            file.copyTo(backup, overwrite = false)
+            log.warn("Copia di sicurezza di {} in {}", file.name, backup.name)
+            true
+        } catch (e: Exception) {
+            backup.delete()
+            log.error("Copia di sicurezza di {} in {} non riuscita: {}", file.name, backup.name, e.message)
+            false
         }
     }
 
     /** @return true se il file è stato scritto. */
     private fun saveToDisk(settings: AppSettings): Boolean = synchronized(diskLock) {
+        // Il file su disco ha valori che non sono in memoria: si scrive solo dopo averne fatto una copia.
+        if (writeBlocked) {
+            if (!copyAside()) {
+                log.error("{} non salvato: senza una copia del file esistente non lo sovrascrivo", file.absolutePath)
+                return@synchronized false
+            }
+            writeBlocked = false
+        }
         val part = File(file.parentFile, "${file.name}.part")
         try {
             file.parentFile?.mkdirs()

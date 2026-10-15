@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 
 class PosTerminalRepositoryImplTest {
 
@@ -153,17 +154,28 @@ class PosTerminalRepositoryImplTest {
         assertEquals("UNKNOWN", journal.entry("att-1")?.phase?.name, "inviato ⇒ UNKNOWN")
     }
 
-    /** Con il gate: cancellare durante begin (fsync lento) deve comunque chiamare finish(id, null). */
+    /**
+     * Cancellare durante begin (fsync lento) deve chiamare finish(id, null) e mai il client (R22). Il begin finto,
+     * come quello reale, attende in NonCancellable: l'annullamento non lo fa lanciare. Il collector gira sul thread
+     * di runBlocking, che resta BLOCCATO (senza sospendere) finché il produttore non chiude il tentativo: il
+     * consumatore non può chiudere il canale prima di send, quindi solo il controllo di cancellazione dopo begin
+     * ferma il comando. Prima il test passava anche senza quel controllo (begin cancellabile, corsa sul canale).
+     */
     @Test
     fun `collector annullato durante begin chiama comunque finish null e mai il client`(): Unit = runBlocking {
         clientAnswers()
-        journal.beginGate = CompletableDeferred()
+        val gate = CompletableDeferred<Unit>()
+        journal.beginGate = gate
 
-        val job = launch(Dispatchers.Default) { repo.execute(pay).collect {} }
+        val job = launch { repo.execute(pay).collect {} }
         withTimeout(5_000) { journal.beginEntered.await() }
-        job.cancelAndJoin()
+        job.cancel()
+        gate.complete(Unit) // l'fsync finisce DOPO la richiesta di annullamento
+        assertTrue(journal.finishEntered.await(5, TimeUnit.SECONDS), "finish chiamato dal produttore")
+        job.join()
 
         assertEquals(listOf("att-1" to null), journal.finishCalls.toList(), "finish(id, null)")
+        assertEquals("NOT_SENT", journal.entry("att-1")?.phase?.name, "CREATED scritto, nulla inviato ⇒ NOT_SENT")
         coVerify(exactly = 0) { client.execute(any(), any()) }
     }
 
