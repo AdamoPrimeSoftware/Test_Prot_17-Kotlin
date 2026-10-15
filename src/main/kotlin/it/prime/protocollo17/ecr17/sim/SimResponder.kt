@@ -195,7 +195,7 @@ internal object SimResponder {
             flushedHeld = true
         }
 
-        val fault = effectiveFault(config, code, flushedHeld)
+        val fault = effectiveFault(config = config, code = code, flushedHeld = flushedHeld)
         if (fault != SimFault.NONE) b.note("Guasto attivo su '$code': ${fault.name}")
 
         // ─── Guasti che precedono l'ACK ───
@@ -242,7 +242,7 @@ internal object SimResponder {
                 val service = text.getOrNull(11) == '1'
                 val stored = if (service) mem.lastServiceReceipt else mem.lastFinancialReceipt
                 val lines = stored?.drop(1) ?: listOf("RISTAMPA", NO_OPERATION_TEXT, RECEIPT_HEADER)
-                b.receiptLines(ackAt, config, lines)
+                b.receiptLines(at = ackAt, config = config, lines = lines)
             }
             if (fault == SimFault.DROP_AFTER_RESULT) {
                 b.close(ackAt, "DROP_AFTER_RESULT: chiusura subito dopo l'ACK")
@@ -263,7 +263,7 @@ internal object SimResponder {
         val baseResultAt = config.resultDelayMs.coerceAtLeast(0)
         val resultAt = if (code in "sTG") minOf(baseResultAt, FAST_RESULT_CAP_MS) else baseResultAt
 
-        val outcome = compute(code, text, config, mem, now)
+        val outcome = compute(code = code, text = text, config = config, memory = mem, now = now)
         mem = outcome.memory
 
         when {
@@ -286,7 +286,7 @@ internal object SimResponder {
         } else {
             null
         }
-        if (receipt != null && !config.receiptAfterResult) b.receiptLines(resultAt, config, receipt)
+        if (receipt != null && !config.receiptAfterResult) b.receiptLines(at = resultAt, config = config, lines = receipt)
         if (fault == SimFault.UNEXPECTED_FRAME_BEFORE_RESULT) {
             b.application(
                 at = resultAt,
@@ -301,7 +301,7 @@ internal object SimResponder {
         val resultDescription = describeResult(code, outcome.payload)
         if (fault == SimFault.BARE_ACK) {
             // 06 seguito SUBITO dall'esito nello stesso segmento, dopo ackDelayMs e senza progress.
-            b.bareAckWithResult(ackAt, outcome.payload, resultDescription, resultWait)
+            b.bareAckWithResult(at = ackAt, payload = outcome.payload, description = resultDescription, ackWait = resultWait)
         } else {
             b.application(
                 at = resultAt,
@@ -316,7 +316,7 @@ internal object SimResponder {
             b.close(resultAt, "DROP_AFTER_RESULT: chiusura subito dopo l'esito, senza attendere l'ACK")
             return b.build(mem)
         }
-        if (receipt != null && config.receiptAfterResult) b.receiptLines(resultAt, config, receipt)
+        if (receipt != null && config.receiptAfterResult) b.receiptLines(at = resultAt, config = config, lines = receipt)
         return b.build(mem, closeAfter = config.closeAfterTransaction)
     }
 
@@ -397,22 +397,22 @@ internal object SimResponder {
 
     private fun compute(code: Char, text: String, config: SimulatorConfig, memory: SimMemory, now: LocalDateTime): Computed =
         when (code) {
-            's' -> Computed(statusPayload(config, now), memory, null)
+            's' -> Computed(payload = statusPayload(config, now), memory = memory, receipt = null)
             'T' -> {
                 val total = memory.posTotalCents
                 val payload = header(config, 'T') + "00" + digits(total, 16) + "000000"
-                val receipt = receipt("TOTALI", null, total, "ESITO OK")
-                Computed(payload, memory.copy(lastServiceReceipt = receipt), receipt)
+                val receipt = receipt(title = "TOTALI", pan = null, amountCents = total, outcome = "ESITO OK")
+                Computed(payload = payload, memory = memory.copy(lastServiceReceipt = receipt), receipt = receipt)
             }
             'C' -> {
                 val total = memory.posTotalCents
                 val payload = header(config, 'C') + "00" + digits(total, 16) + digits(total, 16)
-                val receipt = receipt("CHIUSURA CONTABILE", null, total, "ESITO OK")
+                val receipt = receipt(title = "CHIUSURA CONTABILE", pan = null, amountCents = total, outcome = "ESITO OK")
                 val after = memory.copy(posTotalCents = 0, lastApprovedAmountCents = 0, lastServiceReceipt = receipt)
-                Computed(payload, after, receipt)
+                Computed(payload = payload, memory = after, receipt = receipt)
             }
-            'G' -> Computed(memory.lastResultPayload ?: noOperationPayload(config), memory, null)
-            else -> transaction(code, text, config, memory, now)
+            'G' -> Computed(payload = memory.lastResultPayload ?: noOperationPayload(config), memory = memory, receipt = null)
+            else -> transaction(code = code, text = text, config = config, memory = memory, now = now)
         }
 
     /** P X S p i c H: decisione, contatori, totali, esito ricordato per G e scontrino. */
@@ -428,8 +428,8 @@ internal object SimResponder {
         var preAuthSequence = memory.preAuthSequence
         var preAuthCode = memory.lastPreAuthCode
         val payload = when (code) {
-            'P', 'H' -> paymentBase(f, 'E', decision, koActionAt37 = code == 'H')
-            'X' -> paymentBase(f, 'E', decision) + ACTION_OK +
+            'P', 'H' -> paymentBase(f = f, reply = 'E', decision = decision, koActionAt37 = code == 'H')
+            'X' -> paymentBase(f = f, reply = 'E', decision = decision) + ACTION_OK +
                 (if (decision == SimDecision.APPROVE) digits(requested, 8) else "0".repeat(8)) + "0".repeat(10)
             'S' -> reversal(f, decision)
             'p' -> {
@@ -437,10 +437,10 @@ internal object SimResponder {
                     preAuthSequence += 1
                     preAuthCode = digits(preAuthSequence.toLong(), 9)
                 }
-                preAuth(f, decision, requested, preAuthCode ?: "0".repeat(9))
+                preAuth(f = f, decision = decision, amountCents = requested, preAuthCode = preAuthCode ?: "0".repeat(9))
             }
             'i' -> incremental(f, decision)
-            'c' -> paymentBase(f, 'c', decision) + (if (decision == SimDecision.DECLINE) ACTION_KO else ACTION_OK)
+            'c' -> paymentBase(f = f, reply = 'c', decision = decision) + (if (decision == SimDecision.DECLINE) ACTION_KO else ACTION_OK)
             else -> error("codice di transazione inatteso: $code")
         }
 
@@ -479,7 +479,7 @@ internal object SimResponder {
             lastResultPayload = payload,
             lastFinancialReceipt = receipt,
         )
-        return Computed(payload, after, receipt)
+        return Computed(payload = payload, memory = after, receipt = receipt)
     }
 
     /** Dati comuni a un esito di transazione. */
@@ -516,7 +516,7 @@ internal object SimResponder {
         val base = when (decision) {
             SimDecision.APPROVE -> header(f.config, 'E') + "00" + f.pan + ENTRY_MODE + "000000" + f.hostDateTime +
                 CARD_TYPE_CREDIT + ACQUIRER + f.stanText + f.onlineText
-            else -> paymentBase(f, 'E', decision)
+            else -> paymentBase(f = f, reply = 'E', decision = decision)
         }
         return base + ACTION_OK + "0".repeat(10)
     }
@@ -654,15 +654,22 @@ internal object SimResponder {
         }
 
         fun ack(at: Long) {
-            steps += SimStep.Send(at, listOf(OutFrame(ackBytes(), "ACK ($ruleName)", OutKind.ACK)))
+            val ack = OutFrame(bytes = ackBytes(), description = "ACK ($ruleName)", kind = OutKind.ACK)
+            steps += SimStep.Send(at, listOf(ack))
         }
 
         fun nak(at: Long, why: String) {
-            steps += SimStep.Send(at, listOf(OutFrame(codec.encodeControl(ControlChars.NAK), "NAK ($ruleName): $why", OutKind.NAK)))
+            val nak = OutFrame(bytes = codec.encodeControl(ControlChars.NAK), description = "NAK ($ruleName): $why", kind = OutKind.NAK)
+            steps += SimStep.Send(at, listOf(nak))
         }
 
         fun bareNak(at: Long) {
-            steps += SimStep.Send(at, listOf(OutFrame(byteArrayOf(ControlChars.NAK.toByte()), "BARE_NAK: 15 nudo, senza ETX né LRC", OutKind.BARE_NAK)))
+            val bare = OutFrame(
+                bytes = byteArrayOf(ControlChars.NAK.toByte()),
+                description = "BARE_NAK: 15 nudo, senza ETX né LRC",
+                kind = OutKind.BARE_NAK,
+            )
+            steps += SimStep.Send(at, listOf(bare))
         }
 
         fun bareAck(at: Long) {
@@ -670,29 +677,30 @@ internal object SimResponder {
         }
 
         fun bareAckWithResult(at: Long, payload: String, description: String, ackWait: AckWait?) {
-            val result = OutFrame(encode(payload), description, OutKind.RESULT)
-            steps += SimStep.Send(at, listOf(bareAckFrame(), result), ackWait = ackWait, resend = result)
+            val result = OutFrame(bytes = encode(payload), description = description, kind = OutKind.RESULT)
+            steps += SimStep.Send(atMs = at, frames = listOf(bareAckFrame(), result), ackWait = ackWait, resend = result)
         }
 
         fun progress(at: Long, config: SimulatorConfig) {
             val text = ascii(config.progressText)
             val bytes = byteArrayOf(ControlChars.SOH.toByte()) + text.toByteArray(Charsets.ISO_8859_1) +
                 byteArrayOf(ControlChars.EOT.toByte())
-            steps += SimStep.Send(at, listOf(OutFrame(bytes, "Progress \"$text\"", OutKind.PROGRESS)))
+            val progress = OutFrame(bytes = bytes, description = "Progress \"$text\"", kind = OutKind.PROGRESS)
+            steps += SimStep.Send(at, listOf(progress))
         }
 
         /** Frame applicativo; con [corruptLrc] il primo invio ha l'LRC sbagliato in ogni modalità e il reinvio è corretto. */
         fun application(at: Long, payload: String, description: String, kind: OutKind, ackWait: AckWait?, corruptLrc: Boolean = false) {
-            val correct = OutFrame(encode(payload), description, kind)
+            val correct = OutFrame(bytes = encode(payload), description = description, kind = kind)
             val first = if (corruptLrc) {
                 val bytes = correct.bytes.copyOf()
                 // XOR 0xFF: le 4 modalità differiscono solo nei 2 bit bassi, quindi il valore non è valido in nessuna.
                 bytes[bytes.size - 1] = ((bytes[bytes.size - 1].toInt() and 0xFF) xor 0xFF).toByte()
-                OutFrame(bytes, "$description con LRC corrotto (BAD_LRC_RESULT_ONCE)", kind)
+                OutFrame(bytes = bytes, description = "$description con LRC corrotto (BAD_LRC_RESULT_ONCE)", kind = kind)
             } else {
                 correct
             }
-            steps += SimStep.Send(at, listOf(first), ackWait = ackWait, resend = correct)
+            steps += SimStep.Send(atMs = at, frames = listOf(first), ackWait = ackWait, resend = correct)
         }
 
         /** Righe S una per frame, l'ultima con la sentinella; ognuna attende l'ACK dell'ECR. */
@@ -717,7 +725,11 @@ internal object SimResponder {
         fun build(memory: SimMemory, closeAfter: Boolean = false): SimPlan =
             SimPlan(memory = memory, steps = steps.toList(), notes = notes.toList(), closeAfter = closeAfter)
 
-        private fun bareAckFrame() = OutFrame(byteArrayOf(ControlChars.ACK.toByte()), "BARE_ACK: 06 nudo, senza ETX né LRC", OutKind.BARE_ACK)
+        private fun bareAckFrame() = OutFrame(
+            bytes = byteArrayOf(ControlChars.ACK.toByte()),
+            description = "BARE_ACK: 06 nudo, senza ETX né LRC",
+            kind = OutKind.BARE_ACK,
+        )
 
         private fun encode(payload: String): ByteArray = codec.encodeApplication(payload.toByteArray(Charsets.ISO_8859_1))
     }

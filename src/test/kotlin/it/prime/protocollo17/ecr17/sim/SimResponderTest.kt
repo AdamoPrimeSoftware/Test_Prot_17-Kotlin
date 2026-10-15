@@ -34,6 +34,7 @@ import it.prime.protocollo17.ecr17.profile.ControlLrcRxPolicy
 import it.prime.protocollo17.ecr17.testing.Frames
 import it.prime.protocollo17.ecr17.wire.ControlLrcRule
 import it.prime.protocollo17.ecr17.wire.FrameSplitter
+import it.prime.protocollo17.ecr17.wire.Hex
 import it.prime.protocollo17.ecr17.wire.LrcMode
 import it.prime.protocollo17.ecr17.wire.SplitItem
 import it.prime.protocollo17.ecr17.wire.WireFrame
@@ -72,7 +73,7 @@ class SimResponderTest {
         frame(String(RequestEncoder.encode(request, TerminalIds()), iso), mode)
 
     private fun respond(request: Ecr17Request, config: SimulatorConfig = SimulatorConfig(), memory: SimMemory = SimMemory()): SimPlan =
-        SimResponder.respond(frame(request), config, memory, now)
+        SimResponder.respond(request = frame(request), config = config, memory = memory, now = now)
 
     private val SimPlan.sends: List<SimStep.Send> get() = steps.filterIsInstance<SimStep.Send>()
     private val SimPlan.frames: List<OutFrame> get() = sends.flatMap { it.frames }
@@ -84,9 +85,8 @@ class SimResponderTest {
 
     private fun SimPlan.resultSend(): SimStep.Send = sends.single { s -> s.frames.any { it.kind == OutKind.RESULT } }
 
-    private fun parse(payload: String, sent: CommandCode) = ResponseParser.parse(payload.toByteArray(iso), sent, maskPan = true)
-
-    private fun hex(vararg bytes: Int) = ByteArray(bytes.size) { bytes[it].toByte() }
+    private fun parse(payload: String, sent: CommandCode) =
+        ResponseParser.parse(payload = payload.toByteArray(iso), sent = sent, maskPan = true)
 
     // ─── Esiti approvati: lunghezze e rilettura ─────────────────────────────────
 
@@ -117,6 +117,7 @@ class SimResponderTest {
         assertEquals(LrcMode.STX.compute(payload.toByteArray(iso)), bytes.last().toInt() and 0xFF, "LRC in stx")
     }
 
+    /** X approvato: 92 B con action "000" e importo dell'host in coda; un layout più corto sarebbe riletto come BASE_71 e l'importo dell'host andrebbe perso. */
     @Test
     fun `SR-02 X approvato produce E 92 B con action e importo dell'host`() {
         val payload = respond(PaymentRequest(amountCents = 650, extended = true)).result()
@@ -146,6 +147,7 @@ class SimResponderTest {
         assertEquals(0L, plan.memory.posTotalCents, "totale stornato")
     }
 
+    /** I rifiuti hanno la lunghezza dei positivi (71/92/84/71) e la descrizione in 13/24, altrimenti il parser non li rilegge come DECLINED; H porta l'action "100" in 37/3. */
     @Test
     fun `SR-04 rifiuti di P X S H con descrizione, lunghezze 71 92 84 71 e action 100 per H`() {
         val config = SimulatorConfig(decision = SimDecision.DECLINE)
@@ -169,6 +171,7 @@ class SimResponderTest {
         }
     }
 
+    /** CARD_NOT_PRESENT è un esito "05" col layout positivo, senza PAN e senza consumare STAN: non è una transazione e non deve muovere i contatori. */
     @Test
     fun `SR-05 carta assente risponde 05 con il layout positivo e senza contatori`() {
         val plan = respond(PaymentRequest(amountCents = 10), SimulatorConfig(decision = SimDecision.CARD_NOT_PRESENT))
@@ -182,6 +185,7 @@ class SimResponderTest {
         assertEquals(0, plan.memory.stan, "nessuna transazione")
     }
 
+    /** p: 106 B con importo e codice preautorizzazione nuovo e ricordato (serve a i e c); il KO ha action "100" e tipo carta in 48; il totale POS non si muove. */
     @Test
     fun `SR-06 p produce e 106 B con importo e codice preautorizzazione nuovo`() {
         val plan = respond(PreAuthRequest(amountCents = 5_000))
@@ -209,6 +213,7 @@ class SimResponderTest {
         assertEquals("000001", k.stan)
     }
 
+    /** i ha un layout proprio (acquirer prima dell'auth, A§4.5.4): col layout E il parser leggerebbe auth, STAN e data nelle posizioni sbagliate. */
     @Test
     fun `SR-07 i produce i 75 B con il layout proprio`() {
         val payload = respond(IncrementalAuthRequest(amountCents = 1_000, originalPreAuthCode = "42")).result()
@@ -224,6 +229,7 @@ class SimResponderTest {
         assertEquals("***************1111", r.pan)
     }
 
+    /** c: E base + action (74 B) con codice di risposta 'c', e l'importo chiuso entra nel totale POS come un pagamento. */
     @Test
     fun `SR-08 c produce c 74 B con action e somma l'importo al totale`() {
         val plan = respond(PreAuthClosureRequest(amountCents = 1_234, originalPreAuthCode = "1"))
@@ -237,6 +243,7 @@ class SimResponderTest {
         assertEquals(1_234L, plan.memory.posTotalCents)
     }
 
+    /** s: TID, DDMMYYhhmm, stato '2' e release a multipli di 8, esito entro 300 ms e senza un progress che arriverebbe dopo l'esito. */
     @Test
     fun `SR-09 s riporta TID, data e ora, stato 2 e release a multipli di 8`() {
         val plan = respond(StatusRequest)
@@ -255,6 +262,7 @@ class SimResponderTest {
         assertEquals(31 + 16, longRelease.length, "release portata a 16")
     }
 
+    /** T e C riportano il totale POS accumulato e C lo azzera: senza l'azzeramento la chiusura successiva conterebbe due volte gli stessi incassi. */
     @Test
     fun `SR-10 T 34 B e C 44 B riportano il totale e C lo azzera`() {
         val memory = SimMemory(posTotalCents = 1_234)
@@ -331,22 +339,30 @@ class SimResponderTest {
     @Test
     fun `SR-12 richiesta con LRC errato riceve solo NAK e incrementa il contatore`() {
         val request = frame(PaymentRequest(amountCents = 10), mode = LrcMode.STD)
-        val plan = SimResponder.respond(request, SimulatorConfig(), SimMemory(), now)
+        val plan = SimResponder.respond(request = request, config = SimulatorConfig(), memory = SimMemory(), now = now)
 
         assertEquals(listOf(OutKind.NAK), plan.kinds, "solo NAK")
-        assertArrayEquals(hex(0x15, 0x03, 0x69), plan.frames.single().bytes, "NAK secondo ackRule WIRE")
+        assertArrayEquals(Hex.parse("15 03 69"), plan.frames.single().bytes, "NAK secondo ackRule WIRE")
         assertEquals(1, plan.memory.requestsRejectedForLrc)
         assertEquals(0, plan.memory.stan, "non elaborata")
         assertTrue(plan.notes.any { "LRC" in it }, "nota nel log: ${plan.notes}")
 
-        val stdSim = SimResponder.respond(frame(PaymentRequest(amountCents = 10)), SimulatorConfig(appLrcMode = LrcMode.STD), SimMemory(), now)
+        val stdSim = SimResponder.respond(
+            request = frame(PaymentRequest(amountCents = 10)),
+            config = SimulatorConfig(appLrcMode = LrcMode.STD),
+            memory = SimMemory(),
+            now = now,
+        )
         assertEquals(listOf(OutKind.NAK), stdSim.kinds, "simulatore in std, ECR in stx: rifiutata")
     }
 
+    /** Un codice non gestito o un payload troppo corto ricevono NAK, mai un esito inventato né un'eccezione che chiuderebbe la connessione. */
     @Test
     fun `SR-13 codice non gestito o payload corto ricevono NAK`() {
-        assertEquals(listOf(OutKind.NAK), SimResponder.respond(frame("000000000Z00"), SimulatorConfig(), SimMemory(), now).kinds)
-        assertEquals(listOf(OutKind.NAK), SimResponder.respond(frame("00000"), SimulatorConfig(), SimMemory(), now).kinds)
+        for (payload in listOf("000000000Z00", "00000")) {
+            val plan = SimResponder.respond(request = frame(payload), config = SimulatorConfig(), memory = SimMemory(), now = now)
+            assertEquals(listOf(OutKind.NAK), plan.kinds, "richiesta \"$payload\"")
+        }
     }
 
     // ─── Log del simulatore ─────────────────────────────────────────────────────
@@ -367,6 +383,7 @@ class SimResponderTest {
 
     // ─── Stampa su ECR e ristampa ───────────────────────────────────────────────
 
+    /** E1 arma la stampa solo per la procedura successiva (A§4.3.6): 4 righe S dopo l'esito, sentinella sull'ultima, PAN mascherato dal parser, poi disarmata; E0 disarma. */
     @Test
     fun `SR-15 E1 arma la stampa e la procedura successiva invia 4 righe S dopo l'esito`() {
         val armed = respond(EcrPrintingRequest(enabled = true))
@@ -393,14 +410,16 @@ class SimResponderTest {
         assertFalse(disarmed.memory.ecrPrintingArmed, "E0 disarma")
     }
 
+    /** Con receiptAfterResult = false le righe S precedono l'esito: l'ECR deve raccoglierle anche prima di avere l'esito. */
     @Test
     fun `SR-16 con receiptAfterResult false le righe S precedono l'esito`() {
         val config = SimulatorConfig(receiptAfterResult = false)
-        val plan = respond(PaymentRequest(amountCents = 10), config, SimMemory(ecrPrintingArmed = true))
+        val plan = respond(request = PaymentRequest(amountCents = 10), config = config, memory = SimMemory(ecrPrintingArmed = true))
 
         assertEquals(listOf(OutKind.ACK, OutKind.PROGRESS) + List(4) { OutKind.RECEIPT } + OutKind.RESULT, plan.kinds)
     }
 
+    /** R verso ECR rimanda le 3 righe dell'ultimo scontrino (senza intestazione) con la sentinella, anche senza scontrino precedente; R verso il terminale è solo ACK. */
     @Test
     fun `SR-17 R verso ECR invia 3 righe S dell'ultimo scontrino, verso il terminale solo ACK`() {
         val afterPayment = respond(PaymentRequest(amountCents = 650)).memory
@@ -416,6 +435,7 @@ class SimResponderTest {
 
     // ─── Tempi e regole dei controlli ───────────────────────────────────────────
 
+    /** ACK, progress ed esito partono ai tempi della configurazione con ACK WIRE 06 03 7A e progress Ingenico: sono i tempi su cui si calibrano i timeout dell'ECR. */
     @Test
     fun `SR-18 ACK, progress ed esito ai tempi della configurazione`() {
         val config = SimulatorConfig(ackDelayMs = 5, progressDelayMs = 20, resultDelayMs = 150)
@@ -427,13 +447,16 @@ class SimResponderTest {
         assertFalse(plan.closeAfter)
     }
 
+    /** ackRule SAME_AS_APP: ACK e NAK con l'LRC dell'app in stx (06 03 78, 15 03 6B), per provare la tolleranza dell'ECR verso i terminali non WIRE. */
     @Test
     fun `SR-19 ackRule SAME_AS_APP produce ACK 78 e NAK 6B in stx`() {
         val config = SimulatorConfig(ackRule = ControlLrcRule.SAME_AS_APP)
         assertArrayEquals(Frames.ACK78, respond(StatusRequest, config).frames.first().bytes)
-        assertArrayEquals(hex(0x15, 0x03, 0x6B), respond(StatusRequest, config.copy(fault = SimFault.NAK_ALWAYS, faultOnlyFinancial = false)).frames.single().bytes)
+        val nak = respond(StatusRequest, config.copy(fault = SimFault.NAK_ALWAYS, faultOnlyFinancial = false)).frames.single()
+        assertArrayEquals(Hex.parse("15 03 6B"), nak.bytes, "NAK SAME_AS_APP in stx")
     }
 
+    /** Con retransmitResultIfNoValidAck l'esito attende l'ACK esatto di ackRule (T3/I-7, L§7.2); senza, qualsiasi ACK chiude l'attesa e non ci sono reinvii spontanei. */
     @Test
     fun `SR-20 retransmitResultIfNoValidAck attende l'ACK esatto di ackRule`() {
         val config = SimulatorConfig(retransmitResultIfNoValidAck = true, resultRetransmitDelayMs = 200, resultRetransmitMax = 2)
@@ -454,15 +477,16 @@ class SimResponderTest {
         assertTrue(respond(StatusRequest, config).closeAfter)
         assertTrue(respond(ReprintRequest(), config).closeAfter)
         assertFalse(respond(EcrPrintingRequest(enabled = true), config).closeAfter, "E1 prepara la procedura successiva")
-        val rejected = SimResponder.respond(frame(StatusRequest, mode = LrcMode.STD), config, SimMemory(), now)
+        val rejected = SimResponder.respond(request = frame(StatusRequest, mode = LrcMode.STD), config = config, memory = SimMemory(), now = now)
         assertFalse(rejected.closeAfter)
     }
 
     // ─── Guasti (§4.5) ──────────────────────────────────────────────────────────
 
     private fun faulty(fault: SimFault, request: Ecr17Request = PaymentRequest(amountCents = 10), memory: SimMemory = SimMemory()) =
-        respond(request, SimulatorConfig(fault = fault), memory)
+        respond(request = request, config = SimulatorConfig(fault = fault), memory = memory)
 
+    /** M2: NO_ACK non manda né ACK né progress; PROGRESS_NO_ACK manda il progress, che per l'ECR è un ACK implicito e ne impedisce la ritrasmissione. */
     @Test
     fun `SR-22 NO_ACK e PROGRESS_NO_ACK non inviano l'ACK, solo il secondo invia il progress`() {
         assertEquals(listOf(OutKind.RESULT), faulty(SimFault.NO_ACK).kinds)
@@ -483,6 +507,7 @@ class SimResponderTest {
         assertEquals(listOf(100L, 100L), plan.sends.map { it.atMs }, "progress al più tardi insieme all'esito")
     }
 
+    /** I guasti senza esito non producono un esito né (SILENT) una transazione: l'ECR deve chiuderli con Unknown, mai con un esito inventato. */
     @Test
     fun `SR-23 SILENT, NO_RESULT, DROP_AFTER_REQUEST e DROP_AFTER_ACK non producono esiti`() {
         val silent = faulty(SimFault.SILENT)
@@ -501,6 +526,7 @@ class SimResponderTest {
         assertInstanceOf(SimStep.Close::class.java, dropAck.steps.last())
     }
 
+    /** M5: DROP_AFTER_RESULT invia l'esito e chiude senza attendere l'ACK, per provare che l'ACK finale dell'ECR è best effort. */
     @Test
     fun `SR-24 DROP_AFTER_RESULT invia l'esito senza attendere l'ACK e chiude`() {
         val plan = faulty(SimFault.DROP_AFTER_RESULT)
@@ -513,15 +539,16 @@ class SimResponderTest {
     fun `SR-25 BARE_NAK e BARE_ACK`() {
         val bareNak = faulty(SimFault.BARE_NAK)
         assertEquals(listOf(OutKind.BARE_NAK, OutKind.RESULT), bareNak.kinds)
-        assertArrayEquals(hex(0x15), bareNak.frames.first().bytes)
+        assertArrayEquals(Hex.parse("15"), bareNak.frames.first().bytes, "15 nudo")
 
         val bareAck = faulty(SimFault.BARE_ACK)
         val send = bareAck.sends.single()
         assertEquals(listOf(OutKind.BARE_ACK, OutKind.RESULT), send.frames.map { it.kind }, "06 ed esito nello stesso segmento")
-        assertArrayEquals(hex(0x06), send.frames.first().bytes)
+        assertArrayEquals(Hex.parse("06"), send.frames.first().bytes, "06 nudo")
         assertEquals(SimulatorConfig().ackDelayMs, send.atMs)
     }
 
+    /** BAD_LRC_RESULT_ONCE: il primo esito ha un LRC non valido in nessuna modalità (nessuna tolleranza lo accetta) e il reinvio è lo stesso frame con l'LRC giusto. */
     @Test
     fun `SR-26 BAD_LRC_RESULT_ONCE corrompe l'LRC del primo invio e reinvia l'esito corretto`() {
         val send = faulty(SimFault.BAD_LRC_RESULT_ONCE).resultSend()
@@ -534,6 +561,7 @@ class SimResponderTest {
         assertArrayEquals(first.copyOfRange(0, first.size - 1), resend.copyOfRange(0, resend.size - 1), "stesso frame")
     }
 
+    /** M4: il frame U stantio prima dell'esito è un 34 B che il parser non accetta mai come esito di un pagamento. */
     @Test
     fun `SR-27 UNEXPECTED_FRAME_BEFORE_RESULT invia un U stantio di 34 B prima dell'esito`() {
         val plan = faulty(SimFault.UNEXPECTED_FRAME_BEFORE_RESULT)
@@ -574,10 +602,15 @@ class SimResponderTest {
         assertEquals(0L, next.sends.first().atMs, "subito dopo la richiesta")
         assertNull(next.memory.heldResultPayload)
 
-        val payment = respond(PaymentRequest(amountCents = 10), SimulatorConfig(fault = SimFault.LATE_RESULT_AFTER_NEXT_SEND), held.memory)
+        val payment = respond(
+            request = PaymentRequest(amountCents = 10),
+            config = SimulatorConfig(fault = SimFault.LATE_RESULT_AFTER_NEXT_SEND),
+            memory = held.memory,
+        )
         assertTrue(OutKind.RESULT in payment.kinds, "dopo lo svuotamento la richiesta è servita normalmente")
     }
 
+    /** faultOnlyFinancial (default) lascia funzionare s, T, G durante un guasto; senza il flag il guasto vale anche per s. */
     @Test
     fun `SR-30 faultOnlyFinancial lascia funzionare i comandi di servizio`() {
         assertEquals(OutKind.ACK, faulty(SimFault.NO_ACK, request = StatusRequest).kinds.first())
@@ -585,6 +618,7 @@ class SimResponderTest {
         assertNotEquals(OutKind.ACK, everywhere.kinds.first())
     }
 
+    /** STALE_RESULT_ON_CONNECT invia l'ultimo esito (o NESSUNA OPERAZIONE) alla connessione senza attendere ACK, poi serve le richieste normalmente. */
     @Test
     fun `SR-31 STALE_RESULT_ON_CONNECT invia l'ultimo esito alla connessione senza attendere ACK`() {
         val config = SimulatorConfig(fault = SimFault.STALE_RESULT_ON_CONNECT)

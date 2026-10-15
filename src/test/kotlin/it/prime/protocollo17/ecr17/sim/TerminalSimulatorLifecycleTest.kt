@@ -17,8 +17,10 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
+import java.io.IOException
 import java.net.BindException
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -65,6 +67,16 @@ class TerminalSimulatorLifecycleTest {
         return Thread.getAllStackTraces()
             .filter { (_, stack) -> stack.any { it.inSimulator() } }
             .map { (thread, stack) -> thread.name + " @ " + stack.first { it.inSimulator() } }
+    }
+
+    /**
+     * Il ServerSocket del simulatore, letto per riflessione: è privato di proposito, e un accept() che fallisce da solo
+     * (EMFILE) non si riproduce con l'API pubblica. Serve solo a SL-08.
+     */
+    private fun listenerOf(sim: TerminalSimulator): ServerSocket {
+        val running = TerminalSimulator::class.java.getDeclaredField("running").apply { isAccessible = true }.get(sim)
+            ?: fail<Any>("simulatore non avviato")
+        return running.javaClass.getDeclaredField("server").apply { isAccessible = true }.get(running) as ServerSocket
     }
 
     /** Prima: nessuna porta restituita da start(port = 0). Ora la porta effettiva è sia il ritorno sia boundPort. */
@@ -176,6 +188,36 @@ class TerminalSimulatorLifecycleTest {
         ServerSocket(port, 50, loopback).use { assertEquals(port, it.localPort, "porta liberata") }
     }
 
+    /**
+     * Prima: un accept() fallito da solo (non per stop()) lasciava il ServerSocket aperto e boundPort valorizzata; il
+     * backlog del sistema completava la connect, il pagamento finiva in un socket che nessuno serviva e l'ECR arrivava a
+     * Unknown(ResponseTimeout) con i pagamenti bloccati (M6). Ora la porta rifiuta le connessioni (l'ECR ottiene
+     * ConnectFailed, cioè NotSent), boundPort torna null con una nota, e stop()/start() ripartono puliti.
+     *
+     * Il guasto si provoca con un soTimeout di 1 ms impostato a server aperto: la accept() in corso non lo vede, una
+     * connessione la sblocca e la successiva scade subito, con il ServerSocket ancora aperto come in un EMFILE.
+     */
+    @Test
+    fun `SL-08 ascolto morto da solo chiude la porta e azzera boundPort`() = realTime {
+        val sim = simulator()
+        val note = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            sim.events.first { it is SimEvent.Note && it.text.startsWith("Ascolto interrotto") }
+        }
+        val port = sim.start()
+        listenerOf(sim).soTimeout = 1
+        Socket(loopback, port).also { sockets += it }
+
+        awaitTrue({ "boundPort ancora ${sim.boundPort.value}" }) { sim.boundPort.value == null }
+        note.await()
+        assertThrows(IOException::class.java, {
+            Socket().use { it.connect(InetSocketAddress(loopback, port), CONNECT_TIMEOUT_MS) }
+        }, "la porta non accetta più connessioni (prima il backlog le completava)")
+
+        sim.stop()
+        val restarted = sim.start()
+        Socket(loopback, restarted).use { assertTrue(it.isConnected, "di nuovo in ascolto dopo stop() e start()") }
+    }
+
     private companion object {
         const val TEST_TIMEOUT_MS = 15_000L
         const val AWAIT_MS = 3_000L
@@ -185,5 +227,7 @@ class TerminalSimulatorLifecycleTest {
          * che la join ha aspettato una read bloccante (ordine sbagliato). 1,5 s lascia margine al carico della macchina.
          */
         const val STOP_BUDGET_MS = 1_500L
+        /** Margine per i sistemi in cui una connect verso una porta chiusa di loopback è rifiutata solo dopo i ritentativi del SYN. */
+        const val CONNECT_TIMEOUT_MS = 5_000
     }
 }

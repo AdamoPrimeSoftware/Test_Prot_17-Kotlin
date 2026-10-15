@@ -129,6 +129,7 @@ class SimulatorIntegrationTest {
 
     // ─── Percorso normale ───────────────────────────────────────────────────────
 
+    /** Percorso base sul filo vero: un solo P, esito approvato con PAN mascherato dall'ECR (M9) e ACK finale WIRE 06 03 7A, come l'Ingenico reale. */
     @Test
     fun `IT-01 pagamento approvato con connessione per comando e ACK 7A`() = realTime {
         val (sim, port) = simulator()
@@ -145,6 +146,7 @@ class SimulatorIntegrationTest {
         assertNoClearPanInSimLog()
     }
 
+    /** Un terminale che manda l'ACK con l'LRC dell'app (06 03 78) è accettato senza warning: la tolleranza non lo declassa a ACK mancante. */
     @Test
     fun `IT-02 simulatore con ACK SAME_AS_APP 78 accettato senza warning`() = realTime {
         val (_, port) = simulator(fastSim { it.copy(ackRule = ControlLrcRule.SAME_AS_APP) })
@@ -154,6 +156,7 @@ class SimulatorIntegrationTest {
         assertTrue(outcome.trace.warnings.isEmpty(), "nessun warning: ${outcome.trace.codes}")
     }
 
+    /** Un rifiuto è un esito (DECLINED con descrizione), mai un errore di protocollo che lascerebbe un esito sconosciuto e i pagamenti bloccati. */
     @Test
     fun `IT-03 pagamento rifiutato con descrizione`() = realTime {
         val (_, port) = simulator(fastSim { it.copy(decision = SimDecision.DECLINE) })
@@ -196,6 +199,7 @@ class SimulatorIntegrationTest {
         assertEquals(1, state.stan, "una sola transazione: le ritrasmissioni sono contate, non rielaborate")
     }
 
+    /** M2: un NAK valido fa ritrasmettere il pagamento una sola volta; il simulatore conta 2 P (uno rifiutato, uno servito) e l'esito arriva. */
     @Test
     fun `IT-06 NAK_ONCE ritrasmette una volta ed ottiene l'esito`() = realTime {
         val (sim, port) = simulator(fastSim(SimFault.NAK_ONCE))
@@ -206,6 +210,7 @@ class SimulatorIntegrationTest {
         assertEquals(2, sim.snapshot().received('P'))
     }
 
+    /** M2: un NAK valido a ogni invio porta a Refused(Nak(4)) dopo 1 + nakRetryCount invii, mai a Unknown né a un quinto invio. */
     @Test
     fun `IT-07 NAK_ALWAYS porta a Refused dopo 4 invii`() = realTime {
         val (sim, port) = simulator(fastSim(SimFault.NAK_ALWAYS))
@@ -234,9 +239,10 @@ class SimulatorIntegrationTest {
         assertEquals(Verdict.APPROVED, payment(client(port).pay(PaymentRequest(amountCents = 10))).verdict)
     }
 
+    /** M1/M6: un esito che non arriva dopo l'ACK diventa Unknown(ResponseTimeout) solo allo scadere del responseTimeout, senza ritrasmettere il pagamento. */
     @Test
     fun `IT-10 NO_RESULT porta a Unknown ResponseTimeout dopo circa 2 s`() = realTime {
-        val (_, port) = simulator(fastSim(SimFault.NO_RESULT))
+        val (sim, port) = simulator(fastSim(SimFault.NO_RESULT))
         val startedAt = System.nanoTime()
         val outcome = client(port).pay(PaymentRequest(amountCents = 10))
         val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
@@ -244,6 +250,7 @@ class SimulatorIntegrationTest {
         val unknown = assertInstanceOf(CommandOutcome.Unknown::class.java, outcome, "atteso Unknown: $outcome")
         assertEquals(Ecr17Failure.ResponseTimeout(2_000), unknown.failure)
         assertTrue(elapsedMs >= 2_000, "attesa dell'esito: $elapsedMs ms")
+        assertEquals(1, sim.snapshot().received('P'), "nessuna ritrasmissione dopo il timeout dell'esito")
     }
 
     // ─── Frame inattesi, LRC, orfani ────────────────────────────────────────────
@@ -260,6 +267,7 @@ class SimulatorIntegrationTest {
         assertEquals(listOf("06 03 7A", "06 03 7A"), state.controlFramesReceived)
     }
 
+    /** Esito di un pagamento con LRC errato (strictResultLrc): NAK e reinvio, mai accettato per tolleranza; il simulatore vede NAK e poi ACK. */
     @Test
     fun `IT-12 BAD_LRC_RESULT_ONCE riceve NAK e poi l'esito corretto`() = realTime {
         val (sim, port) = simulator(fastSim(SimFault.BAD_LRC_RESULT_ONCE))
@@ -287,6 +295,7 @@ class SimulatorIntegrationTest {
         assertTrue(lost.payload!!.contains("NESSUNA OPERAZIONE"), "prova allegata: ${lost.payload}")
     }
 
+    /** G restituisce l'ultimo esito identico byte per byte: è la base della verifica di un esito sconosciuto (M6), che confronta G con il tentativo. */
     @Test
     fun `IT-14 G dopo un pagamento restituisce lo stesso payload`() = realTime {
         val (_, port) = simulator()
@@ -300,6 +309,7 @@ class SimulatorIntegrationTest {
 
     // ─── Connessione ────────────────────────────────────────────────────────────
 
+    /** Connessione persistente: due comandi sulla stessa connessione TCP, senza riconnessioni tra un comando e l'altro. */
     @Test
     fun `IT-15 connessione persistente, due s sulla stessa connessione`() = realTime {
         val (sim, port) = simulator()
@@ -346,6 +356,7 @@ class SimulatorIntegrationTest {
         assertTrue(state.controlFramesReceived.all { it == "06 03 78" }, "ACK SAME_AS_APP: ${state.controlFramesReceived}")
     }
 
+    /** Stampa su ECR (E1 + P): 4 righe S con la sentinella sull'ultima, PAN mascherato nelle righe e nel log del simulatore (M9), stampa disarmata dopo. */
     @Test
     fun `IT-18 stampa su ECR con E1, 4 righe S, sentinella e PAN mascherato`() = realTime {
         val (sim, port) = simulator()
@@ -365,6 +376,7 @@ class SimulatorIntegrationTest {
         assertNoClearPanInSimLog()
     }
 
+    /** La risposta a s del simulatore è riletta dal parser dell'ECR: TID, stato operativo e release, senza divergenze di layout tra i due. */
     @Test
     fun `IT-19 stato del terminale`() = realTime {
         val (_, port) = simulator()
@@ -448,16 +460,19 @@ class SimulatorIntegrationTest {
         assertTrue(WarningCode.BARE_CONTROL in outcome.trace.codes)
     }
 
+    /** M1: caduta dopo l'ACK e prima dell'esito ⇒ Unknown(Disconnected) con ACK esplicito, mai NotSent né un replay del pagamento. */
     @Test
     fun `IT-25 DROP_AFTER_ACK porta a Unknown Disconnected dopo l'ACK`() = realTime {
-        val (_, port) = simulator(fastSim(SimFault.DROP_AFTER_ACK))
+        val (sim, port) = simulator(fastSim(SimFault.DROP_AFTER_ACK))
         val outcome = client(port).pay(PaymentRequest(amountCents = 10))
 
         val unknown = assertInstanceOf(CommandOutcome.Unknown::class.java, outcome, "atteso Unknown: $outcome")
         assertInstanceOf(Ecr17Failure.Disconnected::class.java, unknown.failure)
         assertEquals(AckMode.EXPLICIT, unknown.trace?.ackMode)
+        assertEquals(1, sim.snapshot().received('P'), "nessun replay di un pagamento dopo la caduta")
     }
 
+    /** Ristampa verso ECR: R è solo-ACK (Acknowledged), ma le 3 righe S che seguono entrano nella traccia con la sentinella invece di restare orfane. */
     @Test
     fun `IT-26 ristampa verso ECR con 3 righe S`() = realTime {
         val (_, port) = simulator()

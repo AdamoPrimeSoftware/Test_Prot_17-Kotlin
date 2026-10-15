@@ -195,7 +195,11 @@ internal class SimConnection(
                 Inbound.Timeout -> {
                     if (wait.validAck == null || noAckResends >= wait.maxResendsWithoutValidAck) return true
                     noAckResends++
-                    val again = OutFrame(resend.bytes, "${resend.description}: reinvio $noAckResends (nessun ACK valido entro ${wait.waitMs} ms)", resend.kind)
+                    val again = OutFrame(
+                        bytes = resend.bytes,
+                        description = "${resend.description}: reinvio $noAckResends (nessun ACK valido entro ${wait.waitMs} ms)",
+                        kind = resend.kind,
+                    )
                     if (!write(listOf(again))) return false
                     deadline = clock.markNow() + wait.waitMs.milliseconds
                 }
@@ -210,7 +214,7 @@ internal class SimConnection(
                             return true
                         }
                         nakResends++
-                        val again = OutFrame(resend.bytes, "${resend.description}: reinvio dopo NAK", resend.kind)
+                        val again = OutFrame(bytes = resend.bytes, description = "${resend.description}: reinvio dopo NAK", kind = resend.kind)
                         if (!write(listOf(again))) return false
                         deadline = clock.markNow() + wait.waitMs.milliseconds
                     }

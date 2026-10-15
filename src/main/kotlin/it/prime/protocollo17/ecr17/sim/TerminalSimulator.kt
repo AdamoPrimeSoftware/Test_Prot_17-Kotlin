@@ -50,7 +50,9 @@ import java.time.ZoneId
  *
  * L'ordine di [stop] non è reversibile: prima il `ServerSocket` (accept lancia), poi ogni socket client (le read
  * bloccanti lanciano), poi `cancelAndJoin` dello scope con un tetto di 2 s, infine `boundPort = null` ed evento
- * `Stopped`. Al contrario, stop() tornerebbe con la porta ancora legata e un riavvio immediato fallirebbe.
+ * `Stopped`. Al contrario, stop() tornerebbe con la porta ancora legata e un riavvio immediato fallirebbe. Se invece
+ * l'ascolto muore da solo, il ServerSocket si chiude subito e `boundPort` torna null: un ECR che si connette riceve un
+ * rifiuto (`NotSent`), mai un socket muto che lo porterebbe a un esito sconosciuto.
  *
  * Le risposte sono di [SimResponder] (puro); lo stato condiviso tra connessioni (contatori, esito trattenuto,
  * NAK_ONCE) sta in [SimCore] sotto lock, perché alcuni guasti coinvolgono due richieste su due connessioni.
@@ -129,7 +131,7 @@ class TerminalSimulator(
             core.note("Errore interno del simulatore: ${e.message ?: e::class.java.simpleName}")
         }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("p17-sim") + crashNote)
-        val run = Running(server, scope, port)
+        val run = Running(server = server, scope = scope, port = port)
         core.stopping = false
         running = run
         scope.launch(CoroutineName("p17-sim-accept")) { acceptLoop(run) }
@@ -201,7 +203,7 @@ class TerminalSimulator(
                 run.server.accept()
             } catch (e: IOException) {
                 // stop() chiude il ServerSocket: è l'uscita normale. Altrimenti l'ascolto è morto da solo.
-                if (!core.stopping) core.note("Ascolto interrotto: ${e.message ?: e::class.java.simpleName}")
+                if (!core.stopping) listenerDied(run = run, cause = e)
                 return
             }
             if (!run.register(socket)) {
@@ -216,8 +218,28 @@ class TerminalSimulator(
             core.connectionOpened()
             val remote = socket.remoteSocketAddress?.toString()?.removePrefix("/") ?: "?"
             core.emit(SimEvent.ClientConnected(at = core.now(), remote = remote))
-            scope.launch(CoroutineName("p17-sim-connection")) { serveConnection(run, socket, remote) }
+            scope.launch(CoroutineName("p17-sim-connection")) { serveConnection(run = run, socket = socket, remote = remote) }
         }
+    }
+
+    /**
+     * L'ascolto è morto da solo: accept() fallita fuori da stop() (per esempio troppi file aperti).
+     *
+     * Prima il ServerSocket restava aperto e `boundPort` valorizzata: il backlog del sistema completava comunque le
+     * connect, l'ECR scriveva il pagamento in un socket che nessuno serviva, non riceveva ACK e finiva in
+     * `Unknown(ResponseTimeout)` con i pagamenti bloccati (M6). Ora il ServerSocket si chiude subito: la connect
+     * dell'ECR fallisce (`ConnectFailed` ⇒ `NotSent`, nessun dubbio sull'addebito) e `boundPort` torna null, così chi
+     * osserva lo stato vede che il simulatore non è più raggiungibile (skill embedded-server: un server morto non resta
+     * muto). `running` resta valorizzato: stop() chiude comunque i client e lo scope nell'ordine documentato.
+     */
+    private fun listenerDied(run: Running, cause: IOException) {
+        closeQuietly(run.server)
+        // compareAndSet: se nel frattempo un nuovo start() avesse pubblicato un'altra porta, non va azzerata.
+        core.boundPort.compareAndSet(run.port, null)
+        core.note(
+            "Ascolto interrotto (${cause.message ?: cause::class.java.simpleName}): " +
+                "simulatore non raggiungibile, fermarlo e riavviarlo",
+        )
     }
 
     /** Una connessione: attende il turno (una sola servita alla volta), la serve, poi la chiude e lo annota. */
@@ -299,7 +321,7 @@ internal class SimCore(initial: SimulatorConfig, private val wallClock: () -> Lo
     fun plan(request: WireFrame.Application): SimPlan {
         val cfg = config.value
         val plan = synchronized(lock) {
-            SimResponder.respond(request, cfg, memory, localNow()).also { memory = it.memory }
+            SimResponder.respond(request = request, config = cfg, memory = memory, now = localNow()).also { memory = it.memory }
         }
         plan.notes.forEach(::note)
         return plan
