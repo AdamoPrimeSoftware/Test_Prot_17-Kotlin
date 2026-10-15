@@ -151,6 +151,18 @@ class ResultViewMapperTest {
         assertTrue(view(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment(Frames.E4))).quickActions.isEmpty())
     }
 
+    /** Valori leggibili di §6.7 con il grezzo sempre accanto (app di test: si confronta con scontrino e log DLL). */
+    @Test
+    fun `valori leggibili dei campi`() {
+        assertEquals("Contactless chip (CLI)", FieldLabels.value(FieldId.ENTRY_MODE, "CLI"))
+        assertEquals("Credito (2)", FieldLabels.value(FieldId.CARD_TYPE, "2"))
+        assertEquals("giorno 077 · 09:47", FieldLabels.value(FieldId.HOST_DATE_TIME, "0770947"))
+        assertEquals("1,2345 (00012345)", FieldLabels.value(FieldId.DCC_RATE, "00012345"))
+        assertEquals("1,50 € (0000000000000150)", FieldLabels.value(FieldId.POS_TOTAL, "0000000000000150"))
+        assertEquals("Operativo (2)", FieldLabels.value(FieldId.STATUS, "2"))
+        assertEquals("(vuoto)", FieldLabels.value(FieldId.AUTH_CODE, "      "))
+    }
+
     @Test
     fun `payload grezzo, scambio e journalError`() {
         val run = UiFixtures.finished(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment()), journalError = "journal non scritto")

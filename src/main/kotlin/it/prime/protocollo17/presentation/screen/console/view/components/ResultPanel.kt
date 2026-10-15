@@ -195,7 +195,7 @@ private fun ExpandableSection(
 }
 
 private fun List<FieldRow>.toRows(emphasizeFirst: Boolean = false): List<KeyValueRow> =
-    map { row -> KeyValueRow(row.label, row.value, row.position, emphasis = emphasizeFirst && row.label == "PAN") }
+    map { row -> KeyValueRow(label = row.label, value = row.value, trailing = row.position, emphasis = emphasizeFirst && row.label == "PAN") }
 
 /** Testo completo per "Copia": quello che si incolla in una segnalazione o in un confronto con il log. */
 private fun ResultView.toClipboardText(): String = buildString {

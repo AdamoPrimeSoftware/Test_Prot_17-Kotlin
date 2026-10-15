@@ -32,14 +32,14 @@ import kotlin.math.roundToInt
 fun readScreens(): List<DpRect> = runCatching {
     GraphicsEnvironment.getLocalGraphicsEnvironment().screenDevices.map { device ->
         val b = device.defaultConfiguration.bounds
-        DpRect(b.x.toFloat(), b.y.toFloat(), b.width.toFloat(), b.height.toFloat())
+        DpRect(x = b.x.toFloat(), y = b.y.toFloat(), width = b.width.toFloat(), height = b.height.toFloat())
     }
 }.getOrDefault(emptyList())
 
 /** Area di lavoro (schermo principale meno la barra delle applicazioni) in dp; 0×0 = sconosciuta, nessun limite. */
 fun readWorkArea(): DpRect = runCatching {
     val b = GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
-    DpRect(b.x.toFloat(), b.y.toFloat(), b.width.toFloat(), b.height.toFloat())
+    DpRect(x = b.x.toFloat(), y = b.y.toFloat(), width = b.width.toFloat(), height = b.height.toFloat())
 }.getOrDefault(DpRect(0f, 0f, 0f, 0f))
 
 /** Geometria corrente da salvare. Con la finestra massimizzata dimensione e posizione non sono quelle da ripristinare. */

@@ -200,7 +200,7 @@ private fun CompactResult(result: ResultView) {
             Text(result.headline, color = toneColor(result.tone), fontWeight = FontWeight.SemiBold)
         }
         result.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        KeyValueTable(rows = result.fields.map { KeyValueRow(it.label, it.value, it.position) })
+        KeyValueTable(rows = result.fields.map { KeyValueRow(label = it.label, value = it.value, trailing = it.position) })
     }
 }
 

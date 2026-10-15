@@ -128,7 +128,8 @@ private fun AutoScroll(listState: LazyListState, state: TrafficLogUiState) {
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) stickToBottom = atBottom }
     }
-    LaunchedEffect(state.visible.size, state.autoScroll) {
+    // Chiave sull'ultima voce e non sulla dimensione: a ring buffer pieno (5 000 voci) la dimensione non cambia più.
+    LaunchedEffect(state.visible.lastOrNull()?.id, state.autoScroll) {
         if (state.autoScroll && !state.paused && stickToBottom && state.visible.isNotEmpty()) {
             listState.scrollToItem(state.visible.lastIndex)
         }

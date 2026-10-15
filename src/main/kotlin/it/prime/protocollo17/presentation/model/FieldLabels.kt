@@ -5,6 +5,7 @@ import it.prime.protocollo17.ecr17.model.EntryMode
 import it.prime.protocollo17.ecr17.model.FieldId
 import it.prime.protocollo17.ecr17.model.ResponseField
 import java.math.BigDecimal
+import java.math.RoundingMode
 
 /**
  * Etichette italiane dei campi delle risposte e resa leggibile dei valori grezzi.
@@ -126,9 +127,11 @@ object FieldLabels {
         raw.toLongOrNull()?.let { "${formatCents(it)} ($raw)" } ?: raw
 
     /** Tasso DCC: 4 decimali impliciti SEMPRE (A§4.5.1), "00012345" ⇒ "1,2345". */
-    private fun rate(raw: String): String =
-        raw.toBigDecimalOrNull()?.let { BigDecimal(raw).movePointLeft(4).setScale(4).toPlainString().replace('.', ',') }
-            ?.let { "$it ($raw)" } ?: raw
+    private fun rate(raw: String): String {
+        if (raw.isEmpty() || !raw.all { it.isDigit() }) return raw
+        val value = BigDecimal(raw).movePointLeft(4).setScale(4, RoundingMode.UNNECESSARY)
+        return "${value.toPlainString().replace('.', ',')} ($raw)"
+    }
 
     /** DDMMYYhhmm della risposta `s` (anno 2000+YY). */
     private fun terminalDateTime(raw: String): String =

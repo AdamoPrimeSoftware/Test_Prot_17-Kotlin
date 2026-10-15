@@ -185,11 +185,36 @@ private fun BehaviorCard(state: SimulatorUiState, onAction: (SimulatorAction) ->
                 )
             }
         }
-        SwitchRow(s.faultOnlyFinancial, { onAction(SimulatorAction.SetFaultOnlyFinancial(it)) }, "Guasto solo sui comandi finanziari", "Stato, Totali e G restano regolari: utile per provare il recupero con G.")
-        SwitchRow(s.closeAfterTransaction, { onAction(SimulatorAction.SetCloseAfterTransaction(it)) }, "Chiudi la connessione dopo ogni transazione", null)
-        SwitchRow(s.retransmitResultIfNoValidAck, { onAction(SimulatorAction.SetRetransmitResult(it)) }, "Reinvia l'esito se l'ACK dell'ECR non è valido", "Fa comparire RESULT_RETRANSMITTED nel drain.")
-        SwitchRow(s.receiptAfterResult, { onAction(SimulatorAction.SetReceiptAfterResult(it)) }, "Righe scontrino dopo l'esito", "Con 'Stampa su ECR' attiva.")
-        SwitchRow(s.autoStart, { onAction(SimulatorAction.SetAutoStart(it)) }, "Avvia all'apertura dell'app", null)
+        SwitchRow(
+            checked = s.faultOnlyFinancial,
+            onCheckedChange = { onAction(SimulatorAction.SetFaultOnlyFinancial(it)) },
+            title = "Guasto solo sui comandi finanziari",
+            hint = "Stato, Totali e G restano regolari: utile per provare il recupero con G.",
+        )
+        SwitchRow(
+            checked = s.closeAfterTransaction,
+            onCheckedChange = { onAction(SimulatorAction.SetCloseAfterTransaction(it)) },
+            title = "Chiudi la connessione dopo ogni transazione",
+            hint = null,
+        )
+        SwitchRow(
+            checked = s.retransmitResultIfNoValidAck,
+            onCheckedChange = { onAction(SimulatorAction.SetRetransmitResult(it)) },
+            title = "Reinvia l'esito se l'ACK dell'ECR non è valido",
+            hint = "Fa comparire RESULT_RETRANSMITTED nel drain.",
+        )
+        SwitchRow(
+            checked = s.receiptAfterResult,
+            onCheckedChange = { onAction(SimulatorAction.SetReceiptAfterResult(it)) },
+            title = "Righe scontrino dopo l'esito",
+            hint = "Con 'Stampa su ECR' attiva.",
+        )
+        SwitchRow(
+            checked = s.autoStart,
+            onCheckedChange = { onAction(SimulatorAction.SetAutoStart(it)) },
+            title = "Avvia all'apertura dell'app",
+            hint = null,
+        )
     }
 }
 

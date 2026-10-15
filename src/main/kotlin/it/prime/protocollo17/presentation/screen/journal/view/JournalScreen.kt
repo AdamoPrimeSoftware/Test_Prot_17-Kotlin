@@ -243,7 +243,7 @@ private fun Detail(detail: JournalDetailView, canRunG: Boolean, onAction: (Journ
     }
 }
 
-private fun List<FieldRow>.toRows(): List<KeyValueRow> = map { KeyValueRow(it.label, it.value, it.position) }
+private fun List<FieldRow>.toRows(): List<KeyValueRow> = map { KeyValueRow(label = it.label, value = it.value, trailing = it.position) }
 
 // ─── Preview ──────────────────────────────────────────────────────────────────────
 
