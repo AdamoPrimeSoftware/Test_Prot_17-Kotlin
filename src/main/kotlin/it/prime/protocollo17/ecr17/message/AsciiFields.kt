@@ -71,7 +71,7 @@ internal class FieldWriter(private val capacity: Int) {
         // Con caratteri non ASCII la lunghezza in byte non è definita: si contano i code point, così un emoji
         // (2 unità UTF-16) non produce un overflow fittizio oltre all'errore NonAscii già segnalato.
         if (value.codePointCount(0, value.length) > width) {
-            collected += ValidationError.FieldOverflow(field, value, width)
+            collected += ValidationError.FieldOverflow(field = field, value = value, width = width)
             valid = false
         }
         if (!valid) {
@@ -90,7 +90,7 @@ internal class FieldWriter(private val capacity: Int) {
             valid = false
         }
         if (value.codePointCount(0, value.length) > width) {
-            collected += ValidationError.FieldOverflow(field, value, width)
+            collected += ValidationError.FieldOverflow(field = field, value = value, width = width)
             valid = false
         }
         if (!valid) {
@@ -118,10 +118,14 @@ internal class FieldWriter(private val capacity: Int) {
                 repeat(AMOUNT_WIDTH) { put('0'.code) }
             }
             cents > MAX_AMOUNT_CENTS -> {
-                collected += ValidationError.FieldOverflow(RequestField.AMOUNT, cents.toString(), width = AMOUNT_WIDTH)
+                collected += ValidationError.FieldOverflow(
+                    field = RequestField.AMOUNT,
+                    value = cents.toString(),
+                    width = AMOUNT_WIDTH,
+                )
                 repeat(AMOUNT_WIDTH) { put('0'.code) }
             }
-            else -> digits(RequestField.AMOUNT, cents.toString(), width = AMOUNT_WIDTH)
+            else -> digits(field = RequestField.AMOUNT, value = cents.toString(), width = AMOUNT_WIDTH)
         }
     }
 
@@ -131,7 +135,7 @@ internal class FieldWriter(private val capacity: Int) {
      * stampa solo i caratteri validi. Allinearlo a sinistra come farebbe istintivamente un padEnd è un bug noto.
      */
     fun receiptText(value: String) {
-        padStart(RequestField.RECEIPT_TEXT, value, width = RECEIPT_TEXT_WIDTH, pad = ' ')
+        padStart(field = RequestField.RECEIPT_TEXT, value = value, width = RECEIPT_TEXT_WIDTH, pad = ' ')
     }
 
     /**

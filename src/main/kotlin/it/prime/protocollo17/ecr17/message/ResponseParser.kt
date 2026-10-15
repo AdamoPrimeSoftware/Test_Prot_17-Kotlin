@@ -67,7 +67,11 @@ object ResponseParser {
     fun parse(payload: ByteArray, sent: CommandCode, maskPan: Boolean = true): Ecr17Response? {
         if (payload.size < 10) return null
         return when (val code = (payload[9].toInt() and 0xFF).toChar()) {
-            'E', 'V' -> parsePayment(payload, paymentLayoutFor(sent, code, payload.size), maskPan)
+            'E', 'V' -> parsePayment(
+                payload = payload,
+                layout = paymentLayoutFor(sent = sent, replyCode = code, length = payload.size),
+                maskPan = maskPan,
+            )
             'e' -> parsePreAuth(payload, maskPan)
             'i' -> parseIncrementalAuth(payload, maskPan)
             'c', 'v' -> parsePreAuthClosure(payload, maskPan)
@@ -108,7 +112,7 @@ object ResponseParser {
      */
     fun parsePayment(payload: ByteArray, layout: PaymentLayout, maskPan: Boolean = true): PaymentResponse {
         val ko = resultOf(payload) == KO_RESULT
-        val f = FieldCollector(source(payload, maskPan, panReadable = !ko))
+        val f = FieldCollector(source(payload = payload, maskPan = maskPan, panReadable = !ko))
         val head = f.header()
         // Storno OK: pos 35-40 riservate, nessun codice autorizzazione (A§4.5.2).
         val base = f.base71(ko, readAuthCode = layout != PaymentLayout.REVERSAL_84)
@@ -156,7 +160,7 @@ object ResponseParser {
      */
     fun parsePreAuth(payload: ByteArray, maskPan: Boolean = true): PreAuthResponse {
         val ko = resultOf(payload) == KO_RESULT
-        val f = FieldCollector(source(payload, maskPan, panReadable = !ko))
+        val f = FieldCollector(source(payload = payload, maskPan = maskPan, panReadable = !ko))
         val head = f.header()
 
         var pan: String? = null
@@ -203,7 +207,7 @@ object ResponseParser {
      * questo il PAN in 13/19 si legge (e si maschera) con QUALSIASI esito, anche "01".
      */
     fun parseIncrementalAuth(payload: ByteArray, maskPan: Boolean = true): IncrementalAuthResponse {
-        val f = FieldCollector(source(payload, maskPan, panReadable = true))
+        val f = FieldCollector(source(payload = payload, maskPan = maskPan, panReadable = true))
         val head = f.header()
         val pan = f.raw(FieldId.PAN, pos = PAN_POS, len = PAN_LEN).nullIfBlank()
         val entryModeRaw = f.trimmed(FieldId.ENTRY_MODE, pos = 32, len = 3)
@@ -230,7 +234,7 @@ object ResponseParser {
      */
     fun parsePreAuthClosure(payload: ByteArray, maskPan: Boolean = true): PreAuthClosureResponse {
         val ko = resultOf(payload) == KO_RESULT
-        val f = FieldCollector(source(payload, maskPan, panReadable = !ko))
+        val f = FieldCollector(source(payload = payload, maskPan = maskPan, panReadable = !ko))
         val head = f.header()
         val base = f.base71(ko, readAuthCode = true)
         val actionCode = f.raw(FieldId.ACTION_CODE, pos = 72, len = 3).nullIfBlank()
@@ -313,7 +317,9 @@ object ResponseParser {
      * la coda 7D×6 + 1B segna la fine dello scontrino ed è rimossa dal testo.
      *
      * maskPan = true: PanMasker.maskDigitRuns su raw e text (alcuni terminali stampano il PAN in chiaro). Il testo
-     * si maschera DOPO la conversione: un PAN spezzato da un 0x7F diventa una sola sequenza di cifre solo lì.
+     * si maschera DOPO la conversione: un PAN spezzato da un 0x7F diventa una sola sequenza di cifre solo lì. Il
+     * grezzo si maschera con lo 0x7F trasparente ([maskRawReceipt]): prima `maskDigitRuns(raw)` vedeva due sequenze
+     * da 8 cifre sotto la soglia di 13 e lasciava in chiaro in `raw` il PAN che `text` mascherava (M9).
      */
     fun parseReceiptLine(payload: ByteArray, maskPan: Boolean = true): ReceiptLine {
         val raw = FieldReader(payload).restFrom(11)
@@ -330,7 +336,7 @@ object ResponseParser {
             }
         }
         return ReceiptLine(
-            raw = if (maskPan) PanMasker.maskDigitRuns(raw) else raw,
+            raw = if (maskPan) maskRawReceipt(raw = raw, transparent = doubleChar) else raw,
             text = if (maskPan) PanMasker.maskDigitRuns(text) else text,
             doubleHeight = body.indexOf(doubleChar) >= 0,
             isEnd = isEnd,
@@ -360,6 +366,25 @@ object ResponseParser {
             if (maskedField.length == count) maskedField.toByteArray(Charsets.ISO_8859_1).copyInto(masked, from)
         }
         return masked
+    }
+
+    /**
+     * maskDigitRuns sul grezzo di una riga 'S' con [transparent] (0x7F) ignorato: il terminale può inserire il
+     * byte di doppia altezza in mezzo al PAN, e sul grezzo le due metà resterebbero sotto la soglia di 13 cifre.
+     * Si maschera la proiezione senza 0x7F (maskDigitRuns conserva la lunghezza) e si rimettono gli 0x7F al loro
+     * posto, così il grezzo resta fedele al filo tranne le cifre mascherate.
+     *
+     * Se la lunghezza non tornasse (contratto di PanMasker violato) si restituisce la proiezione mascherata: meglio
+     * perdere gli 0x7F nel grezzo che un PAN in chiaro (M9).
+     */
+    private fun maskRawReceipt(raw: String, transparent: Char): String {
+        val projected = raw.filter { it != transparent }
+        val masked = PanMasker.maskDigitRuns(projected)
+        if (masked.length != projected.length) return masked
+        var next = 0
+        return buildString(raw.length) {
+            for (c in raw) append(if (c == transparent) c else masked[next++])
+        }
     }
 
     /** Numero solo se il campo è COMPLETO e di sole cifre (A§8 D10): un importo troncato o "00000650AB" è null. */
@@ -402,16 +427,17 @@ object ResponseParser {
 
         fun raw(id: FieldId, pos: Int, len: Int): String {
             val value = reader.at(pos, len)
-            if (value.isNotEmpty()) collected += ResponseField(id, pos, len, value)
+            if (value.isNotEmpty()) collected += ResponseField(id = id, pos = pos, len = len, raw = value)
             return value
         }
 
         /** Campo di testo allineato a sinistra: in `fields` il grezzo, al chiamante il valore senza spazi finali. */
-        fun trimmed(id: FieldId, pos: Int, len: Int): String? = raw(id, pos, len).trimEnd(' ').ifEmpty { null }
+        fun trimmed(id: FieldId, pos: Int, len: Int): String? =
+            raw(id = id, pos = pos, len = len).trimEnd(' ').ifEmpty { null }
 
         fun rest(id: FieldId, pos: Int): String {
             val value = reader.restFrom(pos)
-            if (value.isNotEmpty()) collected += ResponseField(id, pos, value.length, value)
+            if (value.isNotEmpty()) collected += ResponseField(id = id, pos = pos, len = value.length, raw = value)
             return value
         }
 

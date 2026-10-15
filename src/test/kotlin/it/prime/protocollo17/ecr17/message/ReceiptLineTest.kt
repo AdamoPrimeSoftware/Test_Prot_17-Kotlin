@@ -87,12 +87,21 @@ class ReceiptLineTest {
         assertEquals("CARTA ************1111", line.raw)
     }
 
-    /** M9: un PAN spezzato da 0x7F nel grezzo torna intero nel testo, e lì va mascherato. */
+    /**
+     * M9: un PAN spezzato da 0x7F nel grezzo torna intero nel testo, e lì va mascherato. Anche il grezzo (che esce
+     * dal parser verso trace, eventi e UI) va mascherato: le due metà da 8 cifre, da sole, non raggiungono la soglia
+     * di 13 cifre di maskDigitRuns, quindi lo 0x7F va ignorato. Lo 0x7F resta al suo posto nel grezzo.
+     */
     @Test
     fun `maskPan maschera il PAN ricomposto nel testo`() {
         val line = ResponseParser.parseReceiptLine(p("123456780SPAN 41111111\u007F11111111"), maskPan = true)
         assertTrue(line.doubleHeight)
         assertFalse(line.text.contains("4111111111111111"), line.text)
         assertTrue(line.text.endsWith("1111"))
+        assertFalse(line.raw.filter { it != '\u007F' }.contains("4111111111111111"), line.raw)
+        assertFalse(line.raw.contains("41111111"), "nessuna delle due metà resta in chiaro: ${line.raw}")
+        assertTrue(line.raw.contains('\u007F'), "il grezzo conserva lo 0x7F")
+        assertEquals("PAN ********\u007F****1111", line.raw)
+        assertEquals("PAN ************1111", line.text)
     }
 }

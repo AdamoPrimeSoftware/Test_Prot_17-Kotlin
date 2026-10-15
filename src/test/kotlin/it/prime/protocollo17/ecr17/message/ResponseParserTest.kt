@@ -61,6 +61,8 @@ class ResponseParserTest {
     private val i75 = "123456780i000000000004111111111CLIACQ        AUTH01000042000099211152000000"
     private val e106 = "123456780e000000000004111111111CLIAUTH01000500000000001230002111520" +
         "000" + "0" + "ACQ        " + "000042" + "000099" + "000000000000"
+    /** 'c' 74 B: pos 1-71 come la 'E' di pagamento più action code 72/3 (A§4.5.5). */
+    private val c74 = "123456780c" + paymentPositive.substring(10) + "000"
     private val v109 = "123456780v000000000004111111111ICCABC12321115202ACQ        000042000099" +
         "000" + "1" + "00012345" + "USD" + "000000000650" + "2" + "0000000000"
     private val s84 = "123456780E000000000004111111111ICC0000002111520" +
@@ -79,7 +81,7 @@ class ResponseParserTest {
         mapOf(
             paymentPositive to 71, paymentNegative to 71, paymentDcc to 107, status to 37, totals to 34,
             closePositive to 44, closeNegative to 34, preAuthPositive to 67, preAuthNegative to 94,
-            payApproved to 71, i75 to 75, e106 to 106, v109 to 109, s84 to 84, x92 to 92, hKo to 71,
+            payApproved to 71, i75 to 75, e106 to 106, c74 to 74, v109 to 109, s84 to 84, x92 to 92, hKo to 71,
         ).forEach { (payload, length) -> assertEquals(length, payload.length, payload) }
     }
 
@@ -402,7 +404,6 @@ class ResponseParserTest {
     /** 'c' 74 B: pos 1-71 come la 'E' più action code 72/3, nessun DCC. */
     @Test
     fun `chiusura preautorizzazione senza DCC`() {
-        val c74 = "123456780c" + paymentPositive.substring(10) + "000"
         val r = assertInstanceOf(
             PreAuthClosureResponse::class.java,
             ResponseParser.parse(p(c74), CommandCode.PRE_AUTH_CLOSURE, maskPan = false),
@@ -546,25 +547,37 @@ class ResponseParserTest {
         assertEquals("123", shortStatus.terminalId)
     }
 
-    /** Proprietà: ogni prefisso di ogni vettore, con ogni comando inviato, si decodifica senza eccezioni. */
-    @Test
-    fun `ogni troncamento di ogni vettore si decodifica senza eccezioni`() {
-        val vectors = listOf(
-            paymentPositive, paymentNegative, paymentDcc, status, totals, closePositive, closeNegative,
-            preAuthPositive, preAuthNegative, i75, e106, v109, s84, x92, hKo, Frames.T34, Frames.E4,
-        )
-        for (vector in vectors) for (length in 0..vector.length) for (sent in CommandCode.entries) {
+    /**
+     * Vettori della proprietà "nessun troncamento lancia": anche quelli con PAN in chiaro (E22_CLEAR, I75_KO_CLEAR,
+     * riga S con PAN intero o spezzato da 0x7F), così con maskPan = true il ramo di mascheramento gira su ogni
+     * prefisso, compresi quelli che tagliano il campo PAN 13/19 a metà.
+     */
+    private val truncationVectors = listOf(
+        paymentPositive, paymentNegative, paymentDcc, status, totals, closePositive, closeNegative,
+        preAuthPositive, preAuthNegative, i75, e106, c74, v109, s84, x92, hKo, Frames.T34, Frames.E4,
+        Frames.E22_CLEAR, Frames.I75_KO_CLEAR, Frames.RECEIPT_PAN, "123456780SPAN 41111111\u007F11111111",
+    )
+
+    /** Ogni prefisso di ogni vettore, con ogni comando inviato, passa da tutti i parser senza eccezioni. */
+    private fun decodeEveryTruncation(maskPan: Boolean) {
+        for (vector in truncationVectors) for (length in 0..vector.length) for (sent in CommandCode.entries) {
             val prefix = p(vector.substring(0, length))
-            ResponseParser.parse(prefix, sent, maskPan = false)
-            ResponseParser.parsePayment(prefix, PaymentLayout.DCC_117, maskPan = false)
-            ResponseParser.parsePreAuth(prefix, maskPan = false)
-            ResponseParser.parseIncrementalAuth(prefix, maskPan = false)
-            ResponseParser.parsePreAuthClosure(prefix, maskPan = false)
+            ResponseParser.parse(prefix, sent, maskPan = maskPan)
+            ResponseParser.parsePayment(prefix, PaymentLayout.DCC_117, maskPan = maskPan)
+            ResponseParser.parsePreAuth(prefix, maskPan = maskPan)
+            ResponseParser.parseIncrementalAuth(prefix, maskPan = maskPan)
+            ResponseParser.parsePreAuthClosure(prefix, maskPan = maskPan)
             ResponseParser.parseStatus(prefix)
             ResponseParser.parseTotals(prefix)
             ResponseParser.parseCloseSession(prefix)
-            ResponseParser.parseReceiptLine(prefix, maskPan = false)
+            ResponseParser.parseReceiptLine(prefix, maskPan = maskPan)
         }
+    }
+
+    /** Proprietà: ogni prefisso di ogni vettore, con ogni comando inviato, si decodifica senza eccezioni. */
+    @Test
+    fun `ogni troncamento di ogni vettore si decodifica senza eccezioni`() {
+        decodeEveryTruncation(maskPan = false)
     }
 
     /** Un importo troncato non diventa un importo più piccolo: è null, il grezzo parziale resta visibile. */
@@ -604,18 +617,49 @@ class ResponseParserTest {
         assertEquals("000042", r.stan)
     }
 
-    /** M9: e, c, v approvate mascherate; un KO della E resta identico (nessun PAN, descrizione intatta). */
+    /**
+     * M9: e, c, v approvate mascherate in `pan`, in `raw` e nella lista `fields` (§7.2); un KO della E resta identico
+     * (nessun PAN, descrizione intatta). Controllare solo `pan` non basterebbe: una regressione che leggesse i campi
+     * dall'array non mascherato lascerebbe il PAN in chiaro nel grezzo e nella vista chiave/valore.
+     */
     @Test
     fun `maskPan su e c v e su un rifiuto`() {
         val e = ResponseParser.parsePreAuth(p(e106), maskPan = true)
-        assertEquals("***************1111", e.pan)
+        assertPanMasked(pan = e.pan, rawText = e.raw.text, fields = e.fields, label = "e 106")
         assertEquals("000000123", e.preAuthCode, "il codice di preautorizzazione non è un PAN")
-        val v = ResponseParser.parsePreAuthClosure(p(v109), maskPan = true)
-        assertEquals("***************1111", v.pan)
+
+        val c = assertInstanceOf(
+            PreAuthClosureResponse::class.java,
+            ResponseParser.parse(p(c74), CommandCode.PRE_AUTH_CLOSURE, maskPan = true),
+        )
+        assertPanMasked(pan = c.pan, rawText = c.raw.text, fields = c.fields, label = "c 74")
+        assertEquals("ABC123", c.authCode)
+        assertEquals("000042", c.stan, "STAN e online non vanno toccati")
+        assertEquals("000099", c.onlineId)
+
+        val v = assertInstanceOf(
+            PreAuthClosureResponse::class.java,
+            ResponseParser.parse(p(v109), CommandCode.PRE_AUTH_CLOSURE, maskPan = true),
+        )
+        assertPanMasked(pan = v.pan, rawText = v.raw.text, fields = v.fields, label = "v 109")
         assertEquals("000000000650", v.dcc?.amountRaw)
 
         val ko = ResponseParser.parsePayment(p(Frames.E4), PaymentLayout.BASE_71, maskPan = true)
         assertEquals(Frames.E4, ko.raw.text)
         assertEquals("OPERAZIONE ANNULLATA", ko.errorDescription)
+    }
+
+    /** Proprietà con maskPan = true, il percorso del client (§3.23): il mascheramento non lancia su nessun prefisso. */
+    @Test
+    fun `ogni troncamento si decodifica senza eccezioni anche con maskPan`() {
+        decodeEveryTruncation(maskPan = true)
+    }
+
+    /** PAN 0000000004111111111 mascherato allo stesso modo nel campo tipizzato, nel grezzo e in `fields` (M9). */
+    private fun assertPanMasked(pan: String?, rawText: String, fields: List<ResponseField>, label: String) {
+        assertEquals("***************1111", pan, label)
+        assertFalse(rawText.contains("4111111111"), "$label raw: $rawText")
+        assertTrue(fields.none { it.raw.contains("4111111111") }, "$label fields: $fields")
+        assertEquals("***************1111", field(fields, FieldId.PAN)?.raw, label)
     }
 }

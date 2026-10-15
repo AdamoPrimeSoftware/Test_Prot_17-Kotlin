@@ -198,13 +198,13 @@ object RequestEncoder {
 
     /** Intestazione comune (A§4.1): TID left-pad '0' (1-8), '0' riservato (9), codice (10). */
     private fun FieldWriter.header(terminalId: String, code: Char) {
-        digits(RequestField.TERMINAL_ID, terminalId, width = ID_WIDTH)
+        digits(field = RequestField.TERMINAL_ID, value = terminalId, width = ID_WIDTH)
         char('0')
         char(code)
     }
 
     private fun FieldWriter.cashRegister(cashRegisterId: String) =
-        digits(RequestField.CASH_REGISTER_ID, cashRegisterId, width = ID_WIDTH)
+        digits(field = RequestField.CASH_REGISTER_ID, value = cashRegisterId, width = ID_WIDTH)
 
     private fun flag(value: Boolean): Char = if (value) '1' else '0'
 
@@ -256,7 +256,7 @@ object RequestEncoder {
         if (value.isBlank()) {
             required(RequestField.PRE_AUTH_CODE, width = PRE_AUTH_CODE_WIDTH)
         } else {
-            digits(RequestField.PRE_AUTH_CODE, value, width = PRE_AUTH_CODE_WIDTH)
+            digits(field = RequestField.PRE_AUTH_CODE, value = value, width = PRE_AUTH_CODE_WIDTH)
         }
     }
 
