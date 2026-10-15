@@ -586,7 +586,9 @@ class Ecr17SessionTest {
             ),
             h.phaseList,
         )
-        h.assertNoWarning(WarningCode.SPURIOUS_CONTROL)
+        // §7.3: "senza warning" vale per QUALSIASI warning (PRG è di 20 caratteri: niente PROGRESS_LENGTH).
+        assertTrue(h.trace.warnings.isEmpty(), "nessun warning atteso: ${h.warningCodes}")
+        assertFalse(h.trace.lateAck, "l'ACK preceduto dal progress non è un ACK tardivo")
     }
 
     /** A§5.2: i progress non estendono la deadline dell'esito. */
@@ -1042,6 +1044,95 @@ class Ecr17SessionTest {
         val residue = h.discarded.last()
         assertEquals(DiscardReason.NOISE, residue.reason)
         assertEquals("FF EE", Hex.spaced(residue.bytes))
+    }
+
+    // ─── Correzioni dalla revisione ──────────────────────────────────────────
+
+    /** §3.21 Cancellazione (a): Annulla durante l'attesa del journal per SENDING ⇒ Cancelled, non Disconnected(ABORTED). */
+    @Test
+    fun `annullamento durante onPhase(SENDING) del primo invio, Cancelled e nessun byte`() = runTest {
+        val h = harness()
+        h.listener.onPhaseHook = {
+            if (it.phase == ExchangePhase.SENDING) {
+                h.token.cancel()
+                h.transport.abort()
+            }
+        }
+
+        val f = failure(h.run())
+
+        assertEquals(Ecr17Failure.Cancelled(byUser = true), f.failure)
+        assertEquals(ExchangePhase.SENDING, f.phase)
+        assertFalse(h.trace.anyMainFrameWriteAttempted)
+        assertTrue(h.transport.writes.isEmpty(), "nessun byte scritto: ${h.writesHex}")
+    }
+
+    /** §3.21 Cancellazione (a): Annulla durante SENDING del reinvio per NAK ⇒ Cancelled, con la prima scrittura tentata. */
+    @Test
+    fun `annullamento durante onPhase(SENDING) del reinvio, Cancelled`() = runTest {
+        val h = harness()
+        h.transport.onApplicationFrame(bytes(0, Frames.NAKW))
+        h.listener.onPhaseHook = {
+            if (it.phase == ExchangePhase.SENDING && it.sends == 2) {
+                h.token.cancel()
+                h.transport.abort()
+            }
+        }
+
+        val f = failure(h.run())
+
+        assertEquals(Ecr17Failure.Cancelled(byUser = true), f.failure)
+        assertTrue(h.trace.anyMainFrameWriteAttempted)
+        assertEquals(1, h.transport.applicationWrites.size, "il reinvio non è partito")
+    }
+
+    /** §3.21: in un comando solo ACK un progress è attività del terminale: al timeout nessun reinvio (M2). */
+    @Test
+    fun `solo ACK, progress senza ACK, AckTimeout senza reinvio`() = runTest {
+        val h = harness(command = CommandCode.ECR_PRINTING)
+        h.transport.onApplicationFrame(bytes(0, Frames.PRG))
+
+        val f = failure(h.run())
+
+        assertEquals(Ecr17Failure.AckTimeout(1), f.failure)
+        assertEquals(ExchangePhase.AWAITING_ACK, f.phase)
+        assertEquals(1, h.transport.applicationWrites.size, "un solo invio")
+        assertEquals(0, h.trace.timeoutRetransmissions)
+    }
+
+    /** §3.21: anche una riga S inattesa in un comando solo ACK è attività del terminale: nessun reinvio. */
+    @Test
+    fun `solo ACK, riga S inattesa senza ACK, AckTimeout senza reinvio`() = runTest {
+        val h = harness(command = CommandCode.ECR_PRINTING)
+        h.transport.onApplicationFrame(bytes(0, app(Frames.RECEIPT)))
+
+        val f = failure(h.run())
+
+        assertEquals(Ecr17Failure.AckTimeout(1), f.failure)
+        assertEquals(1, h.transport.applicationWrites.size, "un solo invio")
+        h.assertWarning(WarningCode.UNEXPECTED_REPLY)
+    }
+
+    /** §3.21 p.5, A§5.5: righe S PRIMA dell'esito: il drain si fa comunque e l'esito ritrasmesso riceve il suo ACK. */
+    @Test
+    fun `sentinella prima dell'esito, il drain raccoglie l'esito ritrasmesso`() = runTest {
+        val h = harness(options = Frames.fast.copy(ecrPrinting = true))
+        h.transport.onApplicationFrame(
+            bytes(0, Frames.ACKW, app(Frames.RECEIPT_END), app(Frames.E22)),
+            bytes(10, app(Frames.E22)),
+        )
+
+        val r = success(h.run())
+
+        assertEquals(Frames.E22, r.text())
+        h.assertWarning(WarningCode.RESULT_RETRANSMITTED)
+        assertEquals(1, h.trace.resultRetransmissions)
+        h.assertNoWarning(WarningCode.RECEIPT_END_MISSING)
+        assertEquals(
+            listOf("06 03 7A", "06 03 7A", "06 03 7A"),
+            h.writesHex.drop(1),
+            "ACK alla riga S, all'esito e all'esito ritrasmesso",
+        )
     }
 
     private companion object {

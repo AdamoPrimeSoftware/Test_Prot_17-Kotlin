@@ -5,6 +5,7 @@ import it.prime.protocollo17.ecr17.error.Ecr17Failure
 import it.prime.protocollo17.ecr17.event.ExchangeListener
 import it.prime.protocollo17.ecr17.event.ProtocolEvent
 import it.prime.protocollo17.ecr17.event.ProtocolEventSink
+import it.prime.protocollo17.ecr17.event.ProtocolWarning
 import it.prime.protocollo17.ecr17.event.WarningCode
 import it.prime.protocollo17.ecr17.message.RequestEncoder
 import it.prime.protocollo17.ecr17.message.ResponseParser
@@ -421,8 +422,15 @@ class Ecr17Client(
     }
 
     /**
-     * Sessione solo-ACK di E1 con un TraceRecorder interno e ExchangeListener.NONE: le sue scritture non toccano il
-     * flag del comando principale (un E1 scritto non rende "forse eseguito" il pagamento) e non finiscono nel journal.
+     * Sessione solo-ACK di E1 con un TraceRecorder interno: le sue scritture non toccano il flag del comando
+     * principale (un E1 scritto non rende "forse eseguito" il pagamento) e le sue fasi non finiscono nel journal.
+     *
+     * Prima il recorder interno aveva ExchangeListener.NONE. Ma E1 gira per prima sulla connessione e fa lei la
+     * raccolta degli orfani prima dell'invio (§3.21 punto 1): un 'E' tardivo di un pagamento rimasto senza esito
+     * trovato lì (o arrivato durante l'handshake di E1) produceva POSSIBLE_LOST_RESULT verso nessuno, quindi
+     * nessuna prova EVIDENCE sul tentativo non risolto (M4, §5.5), nessun warning nella trace del pagamento e
+     * nessuna chiusura del link persistente (§3.23 punto 10). Ora i soli warning vanno al listener del comando
+     * ([WarningsOnlyListener]) e, a fine E1, nella trace principale (TraceRecorder.adopt).
      */
     private suspend fun printingSetup(
         run: CommandRun,
@@ -437,7 +445,7 @@ class Ecr17Client(
             endpoint = cfg.endpoint,
             profile = cfg.profile,
             optionsSummary = cfg.options.summary(),
-            listener = ExchangeListener.NONE,
+            listener = WarningsOnlyListener(run.listener),
             emitter = emitter,
             wallClock = wallClock,
         )
@@ -453,9 +461,13 @@ class Ecr17Client(
             strictResultLrc = false,
             freshConnection = fresh,
         )
-        val result = session(cfg.options, inner, run.token).run(spec)
-        trace.printingSetupSent = inner.anyMainFrameWriteAttempted
-        return result
+        return try {
+            session(cfg.options, inner, run.token).run(spec)
+        } finally {
+            // Anche se E1 esce con un'eccezione: i warning già visti restano nella trace del comando.
+            trace.printingSetupSent = inner.anyMainFrameWriteAttempted
+            trace.adopt(inner.warnings)
+        }
     }
 
     private fun session(options: ProtocolOptions, trace: TraceRecorder, token: CancelToken) = Ecr17Session(
@@ -576,6 +588,15 @@ class Ecr17Client(
         emitter.emit { seq, at ->
             ProtocolEvent.CommandFinished(seq, at, run.exchangeId, command, outcomeClass, failure)
         }
+    }
+
+    /**
+     * Listener della sessione di E1: inoltra SOLO i warning al listener del comando. onPhase resta vuota (E1 non
+     * scrive SENDING nel journal e non tocca il flag M10), così come progress e righe S; un esito orfano visto da
+     * E1 diventa invece prova EVIDENCE sull'ultimo tentativo non risolto, come se l'avesse visto il pagamento (M4).
+     */
+    private class WarningsOnlyListener(private val target: ExchangeListener) : ExchangeListener {
+        override fun onWarning(warning: ProtocolWarning) = target.onWarning(warning)
     }
 
     /** Stato di UN execute, condiviso tra il corpo e i rami catch/finally. */

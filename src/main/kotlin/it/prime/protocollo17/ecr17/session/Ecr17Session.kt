@@ -176,9 +176,16 @@ internal class Ecr17Session(
                 // Possibile solo prima del primo tentativo di scrittura: il journal non ha l'invio, il frame non parte (M3).
                 return ExchangeResult.Failure(Ecr17Failure.Internal("journal: ${e.message}"), ExchangePhase.SENDING)
             }
+            // L'attesa del journal (fsync) può durare: un Annulla arrivato nel frattempo ferma l'invio.
+            if (cancel.cancelled) {
+                return ExchangeResult.Failure(Ecr17Failure.Cancelled(byUser = true), ExchangePhase.SENDING)
+            }
             // rx chiuso = caduta già vista: il trasporto rifiuterebbe comunque la scrittura, quindi nulla è partito.
+            // cancelCurrent() imposta il token PRIMA di abort(): un rx chiuso dall'Annulla è un annullamento, non
+            // una caduta (come in linkClosedFailure e writeFailure).
             if (!transport.isOpen || transport.rx.closedCause != null) {
-                return ExchangeResult.Failure(disconnected(), ExchangePhase.SENDING)
+                val failure = if (cancel.cancelled) Ecr17Failure.Cancelled(byUser = true) else disconnected()
+                return ExchangeResult.Failure(failure, ExchangePhase.SENDING)
             }
             trace.anyMainFrameWriteAttempted = true   // M10: appiccicoso, PRIMA della send
             try {
@@ -229,6 +236,9 @@ internal class Ecr17Session(
                         acknowledgeImplicitly()
                         Step.ToResult
                     } else {
+                        // Solo ACK: si continua ad attendere l'ACK, ma il terminale ha dato un segnale e il
+                        // timeout non deve più reinviare (una ristampa verso il terminale uscirebbe due volte).
+                        activitySinceSend = true
                         null
                     }
                 }
@@ -288,6 +298,8 @@ internal class Ecr17Session(
                     drain(resultFrame = null)
                     return Step.AckOnlyDone
                 }
+                // Una riga S è attività del terminale (§3.21): da qui il timeout dell'ACK non reinvia più.
+                activitySinceSend = true
                 trace.warning(
                     WarningCode.UNEXPECTED_REPLY,
                     "riga di scontrino 'S' inattesa per '${spec.command.wire}' durante l'attesa dell'ACK: ACK inviato",
@@ -450,7 +462,10 @@ internal class Ecr17Session(
             val window = options.drainWindowMs(spec.expectReceipt)
             val capMs = maxOf(DRAIN_MIN_CAP_MS, DRAIN_CAP_WINDOWS * window)
             val capDeadline = timeSource.markNow() + capMs.milliseconds
-            var endSeen = receiptEndSeen
+            // Solo una sentinella vista DURANTE il drain lo chiude (§3.21 punto 5). Prima si partiva da
+            // receiptEndSeen: con le righe S arrivate prima dell'esito (stampa su ECR, A§5.5) il drain era saltato
+            // e un esito ritrasmesso o le righe di una seconda copia restavano senza ACK.
+            var endSeen = false
             var items = 0
             try {
                 while (!endSeen) {
@@ -482,7 +497,8 @@ internal class Ecr17Session(
             } catch (e: Exception) {
                 drainInterrupted("errore durante il drain: ${e.message ?: e::class.simpleName}")
             }
-            if (spec.expectReceipt && !endSeen) {
+            // La sentinella può essere arrivata prima dell'esito: in quel caso lo scontrino è completo.
+            if (spec.expectReceipt && !endSeen && !receiptEndSeen) {
                 trace.warning(WarningCode.RECEIPT_END_MISSING, "drain chiuso senza la riga di fine scontrino")
             }
         }

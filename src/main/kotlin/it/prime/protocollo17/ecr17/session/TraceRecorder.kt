@@ -132,6 +132,17 @@ internal class TraceRecorder(
         }
     }
 
+    /**
+     * Aggiunge al registro i warning di una sessione ausiliaria (E1, §3.23 punto 6) SENZA riemetterli: evento e
+     * listener li hanno già ricevuti dal recorder interno. Servono qui perché finiscano in ExchangeTrace.warnings
+     * (UI) e nella politica di chiusura del link persistente: E1 gira per prima sulla connessione e fa lei la
+     * raccolta degli orfani prima dell'invio (§3.21 punto 1), quindi STALE_BYTES e POSSIBLE_LOST_RESULT di quella
+     * raccolta appartengono al comando principale (§3.23 punto 10).
+     */
+    fun adopt(warnings: List<ProtocolWarning>) {
+        warningList += warnings
+    }
+
     fun build(finishedAt: Long): ExchangeTrace = ExchangeTrace(
         exchangeId = exchangeId,
         command = command,

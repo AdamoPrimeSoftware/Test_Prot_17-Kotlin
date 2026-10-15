@@ -102,66 +102,107 @@ class TcpTransport(
         connection?.let { closeConnection(it, CloseCause.LOCAL, null) }
         if (!scope.isActive) throw TransportException(TransportErrorKind.NOT_CONNECTED, "trasporto terminato")
         val generation = abortGeneration
-        publish(LinkState.Connecting(endpoint, wallClock()))
-        withContext(Dispatchers.IO) {
-            val started = TimeSource.Monotonic.markNow()
-            val address = try {
-                resolve(endpoint.host, connectTimeoutMs)
-            } catch (e: TransportException) {
-                publish(LinkState.ConnectFailed(endpoint, timeout = false, detail = e.detail, at = wallClock()))
-                throw e
-            }
-            val remaining = (connectTimeoutMs - started.elapsedNow().inWholeMilliseconds).coerceAtLeast(1)
-            val socket = Socket().apply {
-                tcpNoDelay = true
-                keepAlive = false
-                soTimeout = 0
-            }
-            pendingSocket = socket
-            try {
-                openSocket(socket, InetSocketAddress(address, endpoint.port), remaining)
-            } catch (e: CancellationException) {
-                closeQuietly(socket)
-                publish(LinkState.ConnectFailed(endpoint, timeout = false, detail = "connessione annullata", at = wallClock()))
-                throw e
-            } catch (e: SocketTimeoutException) {
-                closeQuietly(socket)
-                publish(LinkState.ConnectFailed(endpoint, timeout = true, detail = e.message, at = wallClock()))
-                throw TransportException(TransportErrorKind.CONNECT_TIMEOUT, "nessuna risposta entro $connectTimeoutMs ms", e)
-            } catch (e: IOException) {
-                closeQuietly(socket)
-                val aborted = abortGeneration != generation
-                val detail = if (aborted) "connessione annullata" else e.message
-                publish(LinkState.ConnectFailed(endpoint, timeout = false, detail = detail, at = wallClock()))
-                throw TransportException(
-                    if (aborted) TransportErrorKind.ABORTED else TransportErrorKind.CONNECT_FAILED, detail, e,
+        val connecting = LinkState.Connecting(endpoint, wallClock())
+        publish(connecting)
+        // Uscite che non hanno pubblicato né Connected né ConnectFailed (cancellazione durante il DNS o al cambio di
+        // dispatcher, errore inatteso): prima lo stato restava Connecting fino al comando successivo e l'intestazione
+        // della UI mostrava "connessione in corso" per sempre dopo un comando annullato.
+        try {
+            withContext(Dispatchers.IO) { open(endpoint, connectTimeoutMs, generation) }
+        } catch (e: CancellationException) {
+            replaceConnecting(connecting, detail = CONNECT_ABORTED)
+            throw e
+        } catch (e: Throwable) {
+            replaceConnecting(connecting, detail = e.message ?: e::class.simpleName)
+            throw e
+        }
+    }
+
+    /** Corpo di [connect] su Dispatchers.IO: DNS, connect del socket, Connected e avvio del lettore. */
+    private suspend fun open(endpoint: Endpoint, connectTimeoutMs: Long, generation: Long) {
+        val started = TimeSource.Monotonic.markNow()
+        val address = try {
+            resolve(endpoint.host, connectTimeoutMs)
+        } catch (e: TransportException) {
+            publish(LinkState.ConnectFailed(endpoint, timeout = false, detail = e.detail, at = wallClock()))
+            throw e
+        }
+        // Un abort() arrivato durante il DNS: nessuna connect verso il terminale.
+        if (abortGeneration != generation) throw abortedConnect(endpoint)
+        val remaining = (connectTimeoutMs - started.elapsedNow().inWholeMilliseconds).coerceAtLeast(1)
+        val socket = Socket().apply {
+            tcpNoDelay = true
+            keepAlive = false
+            soTimeout = 0
+        }
+        pendingSocket = socket
+        // abort() incrementa la generazione PRIMA di leggere pendingSocket, qui si scrive pendingSocket PRIMA di
+        // rileggere la generazione (entrambi @Volatile): o abort() vede questo socket e lo chiude, o qui si vede
+        // la generazione cambiata. Prima un abort in questa finestra lasciava partire una connect completa (fino a
+        // connectTimeoutMs verso un host irraggiungibile) e l'annullamento arrivava solo dopo.
+        if (abortGeneration != generation) {
+            pendingSocket = null
+            closeQuietly(socket)
+            throw abortedConnect(endpoint)
+        }
+        try {
+            openSocket(socket, InetSocketAddress(address, endpoint.port), remaining)
+        } catch (e: CancellationException) {
+            closeQuietly(socket)   // ConnectFailed pubblicato da connect()
+            throw e
+        } catch (e: SocketTimeoutException) {
+            closeQuietly(socket)
+            publish(LinkState.ConnectFailed(endpoint, timeout = true, detail = e.message, at = wallClock()))
+            throw TransportException(TransportErrorKind.CONNECT_TIMEOUT, "nessuna risposta entro $connectTimeoutMs ms", e)
+        } catch (e: IOException) {
+            closeQuietly(socket)
+            val aborted = abortGeneration != generation
+            val detail = if (aborted) CONNECT_ABORTED else e.message
+            publish(LinkState.ConnectFailed(endpoint, timeout = false, detail = detail, at = wallClock()))
+            throw TransportException(
+                if (aborted) TransportErrorKind.ABORTED else TransportErrorKind.CONNECT_FAILED, detail, e,
+            )
+        } finally {
+            pendingSocket = null
+        }
+        val opened = synchronized(stateLock) {
+            if (abortGeneration != generation) {
+                null
+            } else {
+                val c = Connection(
+                    endpoint = endpoint,
+                    socket = socket,
+                    input = socket.getInputStream(),
+                    output = socket.getOutputStream(),
+                    epoch = rx.reset(),
                 )
-            } finally {
-                pendingSocket = null
+                connection = c
+                // Connected PRIMA di avviare il lettore: un EOF immediato non può essere scavalcato da Connected.
+                publishLocked(LinkState.Connected(endpoint, wallClock()))
+                c
             }
-            val opened = synchronized(stateLock) {
-                if (abortGeneration != generation) {
-                    null
-                } else {
-                    val c = Connection(
-                        endpoint = endpoint,
-                        socket = socket,
-                        input = socket.getInputStream(),
-                        output = socket.getOutputStream(),
-                        epoch = rx.reset(),
-                    )
-                    connection = c
-                    // Connected PRIMA di avviare il lettore: un EOF immediato non può essere scavalcato da Connected.
-                    publishLocked(LinkState.Connected(endpoint, wallClock()))
-                    c
-                }
-            }
-            if (opened == null) {
-                closeQuietly(socket)
-                publish(LinkState.ConnectFailed(endpoint, timeout = false, detail = "connessione annullata", at = wallClock()))
-                throw TransportException(TransportErrorKind.ABORTED, "connessione annullata")
-            }
-            startReader(opened)
+        }
+        if (opened == null) {
+            closeQuietly(socket)
+            throw abortedConnect(endpoint)
+        }
+        startReader(opened)
+    }
+
+    /** Connect fermata da abort(): stato ConnectFailed e TransportException(ABORTED) da lanciare. */
+    private fun abortedConnect(endpoint: Endpoint): TransportException {
+        publish(LinkState.ConnectFailed(endpoint, timeout = false, detail = CONNECT_ABORTED, at = wallClock()))
+        return TransportException(TransportErrorKind.ABORTED, CONNECT_ABORTED)
+    }
+
+    /**
+     * Pubblica ConnectFailed solo se lo stato è ancora il [connecting] di QUESTA connect (confronto per identità):
+     * un Connected o un ConnectFailed già pubblicati, o lo stato di una connect successiva, non vengono toccati.
+     */
+    private fun replaceConnecting(connecting: LinkState.Connecting, detail: String?) {
+        synchronized(stateLock) {
+            if (mutableLinkState.value !== connecting) return
+            publishLocked(LinkState.ConnectFailed(connecting.endpoint, timeout = false, detail = detail, at = wallClock()))
         }
     }
 
@@ -342,6 +383,8 @@ class TcpTransport(
     }
 
     private companion object {
+        const val CONNECT_ABORTED = "connessione annullata"
+
         private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
 
         fun isIpLiteral(host: String): Boolean = IPV4.matches(host) || host.contains(':')

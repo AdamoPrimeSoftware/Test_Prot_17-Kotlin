@@ -5,6 +5,7 @@ import it.prime.protocollo17.ecr17.event.ExchangeListener
 import it.prime.protocollo17.ecr17.event.FrameDirection
 import it.prime.protocollo17.ecr17.event.FrameKind
 import it.prime.protocollo17.ecr17.event.ProtocolEvent
+import it.prime.protocollo17.ecr17.event.ProtocolWarning
 import it.prime.protocollo17.ecr17.event.WarningCode
 import it.prime.protocollo17.ecr17.model.AckMode
 import it.prime.protocollo17.ecr17.model.CardVerificationRequest
@@ -29,6 +30,7 @@ import it.prime.protocollo17.ecr17.profile.TerminalProfileId
 import it.prime.protocollo17.ecr17.testing.Frames
 import it.prime.protocollo17.ecr17.testing.ScriptedTransport
 import it.prime.protocollo17.ecr17.transport.TransportErrorKind
+import it.prime.protocollo17.ecr17.wire.PanMasker
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -286,6 +288,45 @@ class Ecr17ClientTest {
         assertEquals(Ecr17Failure.PrintingSetupFailed(Ecr17Failure.Nak(4)), result.failure)
         assertTrue(h.transport.applicationWrites.none { codeOf(it) == 'P' }, "nessun frame P")
         assertFalse(result.trace!!.anyMainFrameWriteAttempted)
+    }
+
+    /**
+     * M4, §5.5, §3.23 p.10: con la stampa su ECR la raccolta degli orfani prima dell'invio la fa E1. L'esito orfano
+     * arriva comunque al listener del comando (prova EVIDENCE), con il PAN mascherato, finisce nella trace del
+     * pagamento e chiude il link persistente; le fasi di E1 restano fuori dal listener (journal).
+     */
+    @Test
+    fun `E1 trova un esito orfano, POSSIBLE_LOST_RESULT al listener e link chiuso`() = runTest {
+        val h = harness(options = persistent.copy(ecrPrinting = true))
+        h.transport.onConnect(bytes(0, app(Frames.E22_CLEAR)))
+        h.transport.onApplicationFrame(bytes(0, Frames.ACKW))   // E1
+        h.transport.onApplicationFrame(bytes(0, Frames.ACKW, app(Frames.E22), app(Frames.RECEIPT_END)))
+        val warnings = mutableListOf<ProtocolWarning>()
+        val phases = mutableListOf<PhaseChange>()
+        val listener = object : ExchangeListener {
+            override suspend fun onPhase(change: PhaseChange) {
+                phases += change
+            }
+
+            override fun onWarning(warning: ProtocolWarning) {
+                warnings += warning
+            }
+        }
+
+        val result = outcome<CommandOutcome.Answered>(h.client.pay(PaymentRequest(amountCents = 100), listener))
+
+        val lost = warnings.single { it.code == WarningCode.POSSIBLE_LOST_RESULT }
+        val masked = String(
+            PanMasker.maskApplicationPayload(Frames.E22_CLEAR.toByteArray(Charsets.ISO_8859_1)),
+            Charsets.ISO_8859_1,
+        )
+        assertEquals(masked, lost.payload)
+        assertFalse(lost.payload.orEmpty().contains("4111111111111111"), "PAN in chiaro nella prova")
+        val codes = result.trace.warnings.map { it.code }
+        assertTrue(WarningCode.STALE_BYTES in codes, "STALE_BYTES di E1 nella trace del pagamento: $codes")
+        assertEquals(1, codes.count { it == WarningCode.POSSIBLE_LOST_RESULT }, "una sola volta nella trace: $codes")
+        assertEquals(1, phases.count { it.phase == ExchangePhase.SENDING }, "solo il SENDING del pagamento")
+        assertEquals(1, h.transport.closeCount, "link persistente chiuso dopo un warning sospetto di E1")
     }
 
     // ─── Esiti e opzioni ─────────────────────────────────────────────────────

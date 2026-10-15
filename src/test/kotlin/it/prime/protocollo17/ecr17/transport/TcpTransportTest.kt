@@ -14,8 +14,10 @@ import it.prime.protocollo17.ecr17.wire.WireFrame
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.AfterEach
@@ -34,6 +36,7 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -348,6 +351,49 @@ class TcpTransportTest {
 
         assertEquals(TransportErrorKind.DNS_FAILED, e.kind)
         assertInstanceOf(LinkState.ConnectFailed::class.java, t.linkState.value)
+    }
+
+    /**
+     * §3.18 p.2: connect cancellata prima di arrivare al socket (cambio di dispatcher, DNS) ⇒ ConnectFailed. Prima
+     * lo stato restava Connecting fino al comando successivo.
+     */
+    @Test
+    fun `connect cancellata prima del socket, ConnectFailed e non Connecting`() = realTime {
+        val t = transport()
+        val job = launch {
+            cancel()   // coroutine già cancellata: withContext(Dispatchers.IO) lancia subito
+            t.connect(endpoint, 2_000)
+        }
+        job.join()
+
+        assertTrue(job.isCancelled)
+        val state = assertInstanceOf(LinkState.ConnectFailed::class.java, t.linkState.value)
+        assertEquals("connessione annullata", state.detail)
+    }
+
+    /**
+     * §3.18 p.2 e p.6: abort() dopo l'inizio della connect ma prima che il socket sia registrato in pendingSocket.
+     * Prima la connect TCP partiva comunque (fino a connectTimeoutMs) e l'annullamento arrivava solo dopo: qui il
+     * server non deve vedere alcuna connessione.
+     */
+    @Test
+    fun `abort subito dopo Connecting, nessuna connessione verso il peer`() = realTime {
+        val t = transport()
+        t.linkListener = { state -> if (state is LinkState.Connecting) t.abort() }
+
+        val e = assertThrows(TransportException::class.java) {
+            runBlocking { t.connect(endpoint, 2_000) }
+        }
+
+        assertEquals(TransportErrorKind.ABORTED, e.kind)
+        assertInstanceOf(LinkState.ConnectFailed::class.java, t.linkState.value)
+        server.soTimeout = 300
+        val stray = try {
+            server.accept().also { synchronized(peers) { peers += it } }
+        } catch (timeout: SocketTimeoutException) {
+            null
+        }
+        assertNull(stray, "la connect TCP è partita nonostante l'abort")
     }
 
     private companion object {
