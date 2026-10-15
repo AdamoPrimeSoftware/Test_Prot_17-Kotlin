@@ -31,6 +31,7 @@ import it.prime.protocollo17.presentation.model.HistoryRowView
 import it.prime.protocollo17.presentation.model.ResultView
 import it.prime.protocollo17.presentation.model.ResultViewMapper
 import it.prime.protocollo17.presentation.screen.console.model.CommandCatalog
+import it.prime.protocollo17.presentation.state.CancelResult
 import it.prime.protocollo17.presentation.state.CommandRunner
 import it.prime.protocollo17.presentation.state.FinishedRun
 import it.prime.protocollo17.presentation.state.RunOrigin
@@ -41,6 +42,7 @@ import it.prime.protocollo17.presentation.util.disposeSafely
 import it.prime.protocollo17.presentation.util.formatDateTime
 import it.prime.protocollo17.presentation.util.formatTime
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -90,6 +92,12 @@ class ConsoleViewModel(
     /** Esito di G mostrato nel dialog di risoluzione, per tentativo: va scritto nel journal con la risoluzione. */
     private var gForDialog: Pair<String, CommandOutcome.Answered>? = null
 
+    /** Comando (lettera e istante di avvio) per cui è aperto ConfirmCancelAfterSend: la conferma vale solo per lui. */
+    private var cancelTarget: Pair<CommandCode, Long>? = null
+
+    /** Chiusura di un tentativo in scrittura nel journal: un secondo Resolve (doppio clic) è ignorato. */
+    private var resolveJob: Job? = null
+
     // Cache delle viste per FinishedRun.id: lo stato del runner cambia a ogni fase, gli esiti conclusi no.
     private val viewCache = HashMap<Long, ResultView>()
     private val rowCache = HashMap<Long, HistoryRowView>()
@@ -117,10 +125,7 @@ class ConsoleViewModel(
             ConsoleAction.ConfirmRun -> confirmRun()
             ConsoleAction.PingStatus -> pingStatus()
             ConsoleAction.RequestCancel -> requestCancel()
-            ConsoleAction.ConfirmCancel -> {
-                closeDialog()
-                runner.requestCancel()
-            }
+            ConsoleAction.ConfirmCancel -> confirmCancel()
             ConsoleAction.RecoverWithG -> if (_uiState.value.canRecoverWithG) start(LastResultRequest())
             is ConsoleAction.OpenResolve -> openResolve(action.attemptId)
             is ConsoleAction.Resolve -> resolve(action)
@@ -416,8 +421,15 @@ class ConsoleViewModel(
         _uiState.update { it.copy(dialog = ConsoleDialog.BlockedInfo(blocking.sortedByDescending { e -> e.createdAt }.map(::unresolvedView))) }
     }
 
+    /**
+     * Annulla (pulsante o Esc). La scelta "conferma o annulla subito" si fa sullo stato CORRENTE del runner, non
+     * sulla copia in `_uiState`: quella arriva con un dispatch di ritardo, e un Esc premuto proprio mentre il
+     * servizio passa a SENDING vedrebbe ancora `requestSent == false` e interromperebbe un pagamento già inviato
+     * senza la conferma di §6.5. Resta una finestra minima (il servizio gira su Dispatchers.Default): se il runner
+     * risponde comunque ABORTED_AFTER_SEND per un comando journaled, l'operatore lo sa subito.
+     */
     private fun requestCancel() {
-        val running = _uiState.value.running ?: return
+        val running = runner.state.value.running ?: return
         if (running.cancelRequested) return
         if (running.command.journaled && running.requestSent) {
             val message = if (running.command.movesMoney) {
@@ -427,11 +439,45 @@ class ConsoleViewModel(
                 "Interrompere l'attesa? L'esito resterà sconosciuto e un nuovo comando «${CommandTitles.title(running.command)}» " +
                     "sarà bloccato finché non lo verifichi."
             }
+            cancelTarget = running.command to running.startedAt
             _uiState.update { it.copy(dialog = ConsoleDialog.ConfirmCancelAfterSend(running.command, message)) }
         } else {
-            runner.requestCancel()
+            val result = runner.requestCancel()
+            if (result == CancelResult.ABORTED_AFTER_SEND && running.command.journaled) {
+                emit(ConsoleEvent.ShowError(abortedAfterSendMessage(running.command)))
+            }
         }
     }
+
+    /**
+     * Conferma dell'annullamento dopo l'invio: annulla solo se il comando in corso è ancora quello per cui il
+     * dialog è stato aperto (stesso comando, stesso avvio). Se nel frattempo è finito, o ne è partito un altro, la
+     * domanda non vale più: si chiude il dialog e non si annulla nulla.
+     */
+    private fun confirmCancel() {
+        val dialog = _uiState.value.dialog as? ConsoleDialog.ConfirmCancelAfterSend
+        val target = cancelTarget
+        closeDialog()
+        if (dialog == null || target == null) return
+        val running = runner.state.value.running
+        if (running == null || dialog.command != target.first || (running.command to running.startedAt) != target) {
+            emit(ConsoleEvent.ShowInfo("Il comando è già terminato: nulla da annullare"))
+            return
+        }
+        if (running.cancelRequested) return
+        if (runner.requestCancel() == CancelResult.NOT_RUNNING) {
+            emit(ConsoleEvent.ShowInfo("Il comando è già terminato: nulla da annullare"))
+        }
+    }
+
+    private fun abortedAfterSendMessage(command: CommandCode): String =
+        if (command.movesMoney) {
+            "La richiesta era già stata inviata: l'esito di «${CommandTitles.title(command)}» resterà SCONOSCIUTO e i " +
+                "pagamenti saranno bloccati finché non esegui Ultimo esito (G)."
+        } else {
+            "La richiesta era già stata inviata: l'esito di «${CommandTitles.title(command)}» resterà sconosciuto finché " +
+                "non lo verifichi."
+        }
 
     // ─── Risoluzione dei tentativi ────────────────────────────────────────────────
 
@@ -445,27 +491,50 @@ class ConsoleViewModel(
         _uiState.update { it.copy(dialog = ConsoleDialog.Resolve(resolveModel(attempt, unresolved.size, gRun = null, g = null))) }
     }
 
+    /**
+     * Chiusura del tentativo. Una sola scrittura alla volta: mentre `journal.resolve` lavora il dialog ha le
+     * decisioni disabilitate (`resolving`) e un secondo Resolve è ignorato. Prima un doppio clic avviava una seconda
+     * chiusura sullo stesso tentativo, che il repository rifiutava: l'operatore leggeva "Il tentativo resta
+     * bloccante" subito dopo una chiusura riuscita.
+     */
     private fun resolve(action: ConsoleAction.Resolve) {
+        if (resolveJob?.isActive == true) return
         val note = action.note.trim()
         if (note.isEmpty()) {
             emit(ConsoleEvent.ShowError("La nota è obbligatoria: scrivi come hai verificato l'esito"))
             return
         }
         val gOutcome = gForDialog?.takeIf { it.first == action.attemptId }?.second
-        screenModelScope.launch {
+        setResolving(action.attemptId, resolving = true)
+        resolveJob = screenModelScope.launch {
             try {
                 journal.resolve(action.attemptId, action.kind, note, gOutcome)
-                gForDialog = null
-                _uiState.update { it.copy(dialog = null) }
+                if (gForDialog?.first == action.attemptId) gForDialog = null
+                // Chiude solo il dialog di QUESTO tentativo: nel frattempo l'operatore può averne aperto un altro.
+                _uiState.update { if (it.resolveDialogAttempt() == action.attemptId) it.copy(dialog = null) else it }
                 emit(ConsoleEvent.ShowSuccess("Tentativo chiuso: ${AttemptTexts.resolutionLabel(action.kind)}"))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 log.warn("Risoluzione del tentativo {} non riuscita", action.attemptId, e)
+                setResolving(action.attemptId, resolving = false)
                 emit(ConsoleEvent.ShowError("Chiusura del tentativo non riuscita: ${e.message}. Il tentativo resta bloccante."))
             }
         }
     }
+
+    private fun setResolving(attemptId: String, resolving: Boolean) {
+        _uiState.update { state ->
+            val dialog = state.dialog as? ConsoleDialog.Resolve
+            if (dialog?.model?.attemptId == attemptId) {
+                state.copy(dialog = ConsoleDialog.Resolve(dialog.model.copy(resolving = resolving)))
+            } else {
+                state
+            }
+        }
+    }
+
+    private fun ConsoleUiState.resolveDialogAttempt(): String? = (dialog as? ConsoleDialog.Resolve)?.model?.attemptId
 
     private fun resolveModel(attempt: JournalEntry, unresolvedCount: Int, gRun: FinishedRun?, g: CommandOutcome.Answered?) =
         ResolveDialogModel(
@@ -483,6 +552,7 @@ class ConsoleViewModel(
     private fun closeDialog() {
         pendingRun = null
         gForDialog = null
+        cancelTarget = null
         _uiState.update { it.copy(dialog = null) }
     }
 

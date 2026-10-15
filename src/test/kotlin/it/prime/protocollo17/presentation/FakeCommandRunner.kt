@@ -97,8 +97,15 @@ internal class FakeCommandRunner : CommandRunner {
         nextId = maxOf(nextId, maxId + 1)
     }
 
+    /**
+     * Se impostata, il comando passa a questa fase proprio all'arrivo di [requestCancel]: simula il servizio vero,
+     * che su Dispatchers.Default può raggiungere SENDING tra la lettura dello stato e l'annullamento.
+     */
+    var phaseOnCancel: ExchangePhase? = null
+
     override fun requestCancel(): CancelResult {
         cancelCalls++
+        phaseOnCancel?.let(::setPhase)
         val running = _state.value.running ?: return CancelResult.NOT_RUNNING
         _state.update { it.copy(running = running.copy(cancelRequested = true)) }
         return if (running.requestSent) CancelResult.ABORTED_AFTER_SEND else CancelResult.CANCELLED_BEFORE_SEND

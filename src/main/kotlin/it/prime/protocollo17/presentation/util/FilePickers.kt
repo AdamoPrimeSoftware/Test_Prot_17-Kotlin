@@ -1,8 +1,11 @@
 package it.prime.protocollo17.presentation.util
 
+import androidx.compose.desktop.ui.tooling.preview.Preview
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.window.FrameWindowScope
+import it.prime.protocollo17.presentation.theme.PreviewTheme
 import org.slf4j.LoggerFactory
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
@@ -71,4 +74,14 @@ fun FrameWindowScope.TrackPickerOwner() {
             if (PickerOwner.window === awtWindow) PickerOwner.window = null
         }
     }
+}
+
+// ─── Preview ──────────────────────────────────────────────────────────────────────
+
+@Suppress("unused")
+@Preview
+@Composable
+private fun FilePickersPreview() {
+    // TrackPickerOwner è un effetto di finestra e il dialog di file è AWT: l'anteprima spiega solo il comportamento.
+    PreviewTheme { Text("TrackPickerOwner: effetto senza UI (la finestra con il focus è proprietaria dei dialog di file)") }
 }

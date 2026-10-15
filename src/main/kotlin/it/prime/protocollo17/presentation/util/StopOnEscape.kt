@@ -1,11 +1,14 @@
 package it.prime.protocollo17.presentation.util
 
+import androidx.compose.desktop.ui.tooling.preview.Preview
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import it.prime.protocollo17.presentation.state.Shortcut
 import it.prime.protocollo17.presentation.state.ShortcutBus
+import it.prime.protocollo17.presentation.theme.PreviewTheme
 import org.koin.compose.koinInject
 
 /**
@@ -27,4 +30,14 @@ fun StopOnEscape(enabled: Boolean, onStop: () -> Unit) {
             if (shortcut == Shortcut.StopCurrentJob) currentStop()
         }
     }
+}
+
+// ─── Preview ──────────────────────────────────────────────────────────────────────
+
+@Suppress("unused")
+@Preview
+@Composable
+private fun StopOnEscapePreview() {
+    // Effetto senza UI (e con Koin): l'anteprima spiega solo quando agisce.
+    PreviewTheme { Text("StopOnEscape: effetto senza UI (Esc → annulla solo con escapeCancels, mai con un dialog aperto)") }
 }

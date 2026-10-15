@@ -8,6 +8,7 @@ import it.prime.protocollo17.domain.model.journal.JournalPhase
 import it.prime.protocollo17.domain.model.journal.JournalRecord
 import it.prime.protocollo17.domain.repository.JournalRepository
 import it.prime.protocollo17.domain.util.GAssessment
+import it.prime.protocollo17.domain.util.GAssessmentResult
 import it.prime.protocollo17.domain.util.formatCents
 import it.prime.protocollo17.ecr17.model.CommandCode
 import it.prime.protocollo17.ecr17.model.CommandOutcome
@@ -16,6 +17,7 @@ import it.prime.protocollo17.presentation.components.ResolveDialogModel
 import it.prime.protocollo17.presentation.model.AttemptTexts
 import it.prime.protocollo17.presentation.model.FieldLabels
 import it.prime.protocollo17.presentation.model.FieldRow
+import it.prime.protocollo17.presentation.model.ResultView
 import it.prime.protocollo17.presentation.model.ResultViewMapper
 import it.prime.protocollo17.presentation.state.CommandRunner
 import it.prime.protocollo17.presentation.state.FinishedRun
@@ -26,6 +28,7 @@ import it.prime.protocollo17.presentation.util.disposeSafely
 import it.prime.protocollo17.presentation.util.formatDateTime
 import it.prime.protocollo17.presentation.util.formatFullDateTime
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +53,8 @@ import java.time.ZoneId
  *
  * Il dialog dopo G si apre per il tentativo selezionato quando G è partito (o, se non era da risolvere, per il
  * più recente non risolto) e solo per un G lanciato da questa finestra: quello della Console apre il proprio.
+ * L'esito di G si lega solo al più recente non risolto (G riporta l'ultima transazione): un tentativo più vecchio
+ * si chiude a mano (§6.8).
  */
 class JournalViewModel(private val journal: JournalRepository, private val runner: CommandRunner) : ScreenModel {
 
@@ -64,9 +69,12 @@ class JournalViewModel(private val journal: JournalRepository, private val runne
     private val filterFlow = MutableStateFlow(JournalFilter.ALL)
     private val selectedFlow = MutableStateFlow<String?>(null)
 
-    /** Tentativo selezionato quando è partito G: il dialog si apre per lui. */
+    /** Tentativo selezionato quando è partito G: il dialog si apre per lui (con G solo se è il più recente). */
     private var gTarget: String? = null
     private var gForDialog: Pair<String, CommandOutcome.Answered>? = null
+
+    /** Chiusura di un tentativo in scrittura nel journal: un secondo Resolve (doppio clic) è ignorato. */
+    private var resolveJob: Job? = null
 
     init {
         observeJournal()
@@ -222,6 +230,13 @@ class JournalViewModel(private val journal: JournalRepository, private val runne
         }
     }
 
+    /**
+     * G concluso: l'esito si lega SOLO al tentativo non risolto più recente, come nella Console, perché G riporta
+     * soltanto l'ultima transazione del terminale (§6.8). Se l'operatore aveva selezionato un tentativo più vecchio,
+     * il dialog si apre per quello ma senza G (chiusura a mano con la spunta "ho verificato") e spiega a quale
+     * tentativo appartiene l'esito: offrirgli "L'esito G appartiene al tentativo" (con un suggerimento calcolato su
+     * prove che escludono i tentativi successivi) inviterebbe a registrare su un pagamento l'esito di un altro.
+     */
     private fun onFinished(run: FinishedRun) {
         if (run.origin != RunOrigin.JOURNAL || run.command != CommandCode.LAST_RESULT) return
         val target = gTarget
@@ -233,22 +248,27 @@ class JournalViewModel(private val journal: JournalRepository, private val runne
             return
         }
         val unresolved = journal.unresolved.value
-        val attempt = unresolved.firstOrNull { it.attemptId == target } ?: unresolved.maxByOrNull { it.createdAt }
-        if (attempt == null) {
+        val latest = unresolved.maxByOrNull { it.createdAt }
+        if (latest == null) {
             _events.trySend(JournalEvent.ShowInfo("Ultimo esito (G) ricevuto: nessun tentativo da risolvere"))
             return
         }
-        gForDialog = attempt.attemptId to g
-        val model = ResolveDialogModel(
-            attemptId = attempt.attemptId,
-            attemptTitle = AttemptTexts.title(attempt),
-            attemptTime = formatDateTime(attempt.createdAt),
-            reason = AttemptTexts.reason(attempt),
-            reviewOnly = attempt.needsReview,
+        val selected = unresolved.firstOrNull { it.attemptId == target }
+        if (selected != null && selected.attemptId != latest.attemptId) {
+            gForDialog = null
+            val notice = "L'esito di Ultimo esito (G) riguarda il tentativo più recente (${AttemptTexts.title(latest)} " +
+                "delle ${formatDateTime(latest.createdAt)}), non questo: G riporta solo l'ultima transazione del " +
+                "terminale. Chiudi questo tentativo a mano dopo averlo verificato sullo scontrino o sul terminale."
+            val model = dialogModel(selected, unresolved.size, gResult = null, assessment = null, notice = notice)
+            _uiState.update { it.copy(dialog = JournalDialog.Resolve(model)) }
+            return
+        }
+        gForDialog = latest.attemptId to g
+        val model = dialogModel(
+            attempt = latest,
+            unresolvedCount = unresolved.size,
             gResult = ResultViewMapper.map(run),
-            assessment = GAssessment.assess(attempt, journal.knownResultsBefore(attempt.attemptId), g),
-            evidence = AttemptTexts.evidence(attempt),
-            otherUnresolved = (unresolved.size - 1).coerceAtLeast(0),
+            assessment = GAssessment.assess(latest, journal.knownResultsBefore(latest.attemptId), g),
         )
         _uiState.update { it.copy(dialog = JournalDialog.Resolve(model)) }
     }
@@ -260,38 +280,67 @@ class JournalViewModel(private val journal: JournalRepository, private val runne
             return
         }
         gForDialog = null
-        val model = ResolveDialogModel(
-            attemptId = attempt.attemptId,
-            attemptTitle = AttemptTexts.title(attempt),
-            attemptTime = formatDateTime(attempt.createdAt),
-            reason = AttemptTexts.reason(attempt),
-            reviewOnly = attempt.needsReview,
-            gResult = null,
-            assessment = null,
-            evidence = AttemptTexts.evidence(attempt),
-            otherUnresolved = (unresolved.size - 1).coerceAtLeast(0),
-        )
-        _uiState.update { it.copy(dialog = JournalDialog.Resolve(model)) }
+        _uiState.update { it.copy(dialog = JournalDialog.Resolve(dialogModel(attempt, unresolved.size, gResult = null, assessment = null))) }
     }
 
+    private fun dialogModel(
+        attempt: JournalEntry,
+        unresolvedCount: Int,
+        gResult: ResultView?,
+        assessment: GAssessmentResult?,
+        notice: String? = null,
+    ) = ResolveDialogModel(
+        attemptId = attempt.attemptId,
+        attemptTitle = AttemptTexts.title(attempt),
+        attemptTime = formatDateTime(attempt.createdAt),
+        reason = AttemptTexts.reason(attempt),
+        reviewOnly = attempt.needsReview,
+        gResult = gResult,
+        assessment = assessment,
+        evidence = AttemptTexts.evidence(attempt),
+        otherUnresolved = (unresolvedCount - 1).coerceAtLeast(0),
+        notice = notice,
+    )
+
+    /**
+     * Chiusura del tentativo: una sola scrittura alla volta (decisioni disabilitate con `resolving`, un secondo
+     * Resolve ignorato), come nella Console. Un doppio clic non tenta più una seconda chiusura già rifiutata.
+     */
     private fun resolve(action: JournalAction.Resolve) {
+        if (resolveJob?.isActive == true) return
         val note = action.note.trim()
         if (note.isEmpty()) {
             _events.trySend(JournalEvent.ShowError("La nota è obbligatoria: scrivi come hai verificato l'esito"))
             return
         }
         val gOutcome = gForDialog?.takeIf { it.first == action.attemptId }?.second
-        screenModelScope.launch {
+        setResolving(action.attemptId, resolving = true)
+        resolveJob = screenModelScope.launch {
             try {
                 journal.resolve(action.attemptId, action.kind, note, gOutcome)
-                gForDialog = null
-                _uiState.update { it.copy(dialog = null) }
+                if (gForDialog?.first == action.attemptId) gForDialog = null
+                _uiState.update { state ->
+                    val open = (state.dialog as? JournalDialog.Resolve)?.model?.attemptId
+                    if (open == action.attemptId) state.copy(dialog = null) else state
+                }
                 _events.trySend(JournalEvent.ShowInfo("Tentativo chiuso: ${AttemptTexts.resolutionLabel(action.kind)}"))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 log.warn("Risoluzione del tentativo {} non riuscita", action.attemptId, e)
+                setResolving(action.attemptId, resolving = false)
                 _events.trySend(JournalEvent.ShowError("Chiusura del tentativo non riuscita: ${e.message}. Il tentativo resta bloccante."))
+            }
+        }
+    }
+
+    private fun setResolving(attemptId: String, resolving: Boolean) {
+        _uiState.update { state ->
+            val dialog = state.dialog as? JournalDialog.Resolve
+            if (dialog?.model?.attemptId == attemptId) {
+                state.copy(dialog = JournalDialog.Resolve(dialog.model.copy(resolving = resolving)))
+            } else {
+                state
             }
         }
     }

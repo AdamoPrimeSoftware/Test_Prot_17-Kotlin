@@ -7,13 +7,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import it.prime.protocollo17.presentation.components.LocalSnackbarHostState
+import it.prime.protocollo17.presentation.components.LocalNoticePresenter
 import it.prime.protocollo17.presentation.components.NoticeTone
-import it.prime.protocollo17.presentation.components.showNotice
 import it.prime.protocollo17.presentation.screen.console.viewModel.ConsoleAction
 import it.prime.protocollo17.presentation.screen.console.viewModel.ConsoleEvent
 import it.prime.protocollo17.presentation.screen.console.viewModel.ConsoleUiState
@@ -24,7 +22,6 @@ import it.prime.protocollo17.presentation.state.ShortcutBus
 import it.prime.protocollo17.presentation.theme.PreviewTheme
 import it.prime.protocollo17.presentation.util.ObserveAsEvents
 import it.prime.protocollo17.presentation.util.StopOnEscape
-import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 
 /**
@@ -40,8 +37,7 @@ fun ConsoleScreenRoot(viewModel: ConsoleViewModel, modifier: Modifier = Modifier
     val state by viewModel.uiState.collectAsState()
     val windows: AppWindows = koinInject()
     val shortcutBus: ShortcutBus = koinInject()
-    val snackbar = LocalSnackbarHostState.current
-    val scope = rememberCoroutineScope()
+    val notices = LocalNoticePresenter.current
 
     ObserveAsEvents(viewModel.events) { event ->
         val (tone, message) = when (event) {
@@ -49,7 +45,7 @@ fun ConsoleScreenRoot(viewModel: ConsoleViewModel, modifier: Modifier = Modifier
             is ConsoleEvent.ShowInfo -> NoticeTone.INFO to event.message
             is ConsoleEvent.ShowSuccess -> NoticeTone.SUCCESS to event.message
         }
-        scope.launch { snackbar?.showNotice(tone, message) }
+        notices?.show(tone, message)
     }
 
     StopOnEscape(enabled = state.escapeCancels) { viewModel.onAction(ConsoleAction.RequestCancel) }

@@ -7,12 +7,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import it.prime.protocollo17.presentation.components.LocalSnackbarHostState
+import it.prime.protocollo17.presentation.components.LocalNoticePresenter
 import it.prime.protocollo17.presentation.components.NoticeTone
-import it.prime.protocollo17.presentation.components.showNotice
 import it.prime.protocollo17.presentation.screen.traffic.viewModel.TrafficLogAction
 import it.prime.protocollo17.presentation.screen.traffic.viewModel.TrafficLogEvent
 import it.prime.protocollo17.presentation.screen.traffic.viewModel.TrafficLogViewModel
@@ -20,7 +18,6 @@ import it.prime.protocollo17.presentation.theme.PreviewTheme
 import it.prime.protocollo17.presentation.util.ObserveAsEvents
 import it.prime.protocollo17.presentation.util.openInExplorer
 import it.prime.protocollo17.presentation.util.openSaveDialog
-import kotlinx.coroutines.launch
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -32,12 +29,11 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun TrafficLogScreenRoot(viewModel: TrafficLogViewModel, modifier: Modifier = Modifier) {
     val state by viewModel.uiState.collectAsState()
-    val snackbar = LocalSnackbarHostState.current
-    val scope = rememberCoroutineScope()
+    val notices = LocalNoticePresenter.current
     ObserveAsEvents(viewModel.events) { event ->
         when (event) {
-            is TrafficLogEvent.ShowError -> scope.launch { snackbar?.showNotice(NoticeTone.ERROR, event.message) }
-            is TrafficLogEvent.ShowInfo -> scope.launch { snackbar?.showNotice(NoticeTone.SUCCESS, event.message) }
+            is TrafficLogEvent.ShowError -> notices?.show(NoticeTone.ERROR, event.message)
+            is TrafficLogEvent.ShowInfo -> notices?.show(NoticeTone.SUCCESS, event.message)
         }
     }
     TrafficLogScreen(

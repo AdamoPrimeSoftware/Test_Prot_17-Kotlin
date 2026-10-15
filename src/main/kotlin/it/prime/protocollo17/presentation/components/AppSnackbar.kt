@@ -26,6 +26,9 @@ import androidx.compose.material3.SnackbarVisuals
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,6 +37,9 @@ import androidx.compose.ui.unit.dp
 import it.prime.protocollo17.presentation.theme.PreviewTheme
 import it.prime.protocollo17.presentation.theme.SuccessGreen
 import it.prime.protocollo17.presentation.theme.WarningAmber
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /** Tono di un avviso a schermo: decide icona e colore dello snackbar. */
 enum class NoticeTone { SUCCESS, INFO, WARNING, ERROR }
@@ -53,19 +59,41 @@ class AppSnackbarVisuals(
 }
 
 /**
- * Lo SnackbarHostState della finestra corrente (§6.1: ogni finestra ha il proprio SnackbarHost). Ogni
- * `XScreenRoot` mostra qui i propri eventi: un solo host per finestra, quindi niente snackbar sovrapposti.
+ * Avvisi di UNA finestra (§6.1: ogni finestra ha il proprio SnackbarHost): ogni avviso SOSTITUISCE quello visibile,
+ * non si accoda (§6.18). Una coda di messaggi vecchi davanti all'esito appena arrivato lo farebbe leggere tardi, e
+ * gli errori restano finché l'operatore non li chiude.
+ *
+ * Prima ogni avviso faceva `dismiss()` dello snackbar corrente e poi `showSnackbar`: due avvisi ravvicinati
+ * chiudevano lo STESSO vecchio snackbar e il secondo si metteva in coda dietro al primo (il mutex dello
+ * SnackbarHostState), visibile solo dopo la chiusura a mano del primo. Ora si tiene il Job dell'avviso visibile e lo
+ * si cancella: la cancellazione di `showSnackbar` sospeso toglie lo snackbar e libera il mutex, e il nuovo avviso
+ * passa subito. Console e AppNotifications della finestra principale passano dallo stesso presenter.
+ *
+ * Da usare solo dal thread UI (raccolte in composizione, `onClick`): [current] non è sincronizzato.
  */
-val LocalSnackbarHostState = staticCompositionLocalOf<SnackbarHostState?> { null }
+@Stable
+class NoticePresenter(val hostState: SnackbarHostState, private val scope: CoroutineScope) {
+    private var current: Job? = null
 
-/**
- * Mostra un avviso SOSTITUENDO quello visibile (non accoda): una coda di cinque messaggi vecchi davanti all'esito
- * appena arrivato lo farebbe leggere un minuto dopo.
- */
-suspend fun SnackbarHostState.showNotice(tone: NoticeTone, message: String, actionLabel: String? = null): SnackbarResult {
-    currentSnackbarData?.dismiss()
-    return showSnackbar(AppSnackbarVisuals(message, tone, actionLabel))
+    /** [onAction] è chiamata se l'operatore preme [actionLabel] (es. "Apri" ⇒ porta davanti la finestra). */
+    fun show(tone: NoticeTone, message: String, actionLabel: String? = null, onAction: () -> Unit = {}) {
+        current?.cancel()
+        current = scope.launch {
+            val result = hostState.showSnackbar(AppSnackbarVisuals(message, tone, actionLabel))
+            if (result == SnackbarResult.ActionPerformed) onAction()
+        }
+    }
 }
+
+/** Presenter legato alla composizione della finestra: lo scope muore con la finestra, e con lui l'avviso visibile. */
+@Composable
+fun rememberNoticePresenter(): NoticePresenter {
+    val scope = rememberCoroutineScope()
+    return remember(scope) { NoticePresenter(SnackbarHostState(), scope) }
+}
+
+/** Il presenter della finestra corrente: ogni `XScreenRoot` mostra qui i propri eventi (un solo host per finestra). */
+val LocalNoticePresenter = staticCompositionLocalOf<NoticePresenter?> { null }
 
 /** Host degli snackbar con il colore del tono e il testo selezionabile (un errore si copia per segnalarlo). */
 @Composable

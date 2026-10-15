@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,7 +28,9 @@ import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.CurrentScreen
 import cafe.adriel.voyager.navigator.Navigator
 import it.prime.protocollo17.presentation.components.AppSnackbarHost
-import it.prime.protocollo17.presentation.components.LocalSnackbarHostState
+import it.prime.protocollo17.presentation.components.LocalNoticePresenter
+import it.prime.protocollo17.presentation.components.NoticePresenter
+import it.prime.protocollo17.presentation.components.rememberNoticePresenter
 import it.prime.protocollo17.presentation.state.AppWindowId
 import it.prime.protocollo17.presentation.state.AppWindows
 import it.prime.protocollo17.presentation.theme.AppTheme
@@ -92,16 +93,17 @@ internal fun SecondaryWindow(
 
 /**
  * Cornice comune del contenuto di ogni finestra: il tema (che legge `ui.themeMode`) e il proprio SnackbarHost,
- * esposto con LocalSnackbarHostState ai Root della finestra (un solo host per finestra, niente sovrapposizioni).
+ * esposto con LocalNoticePresenter ai Root della finestra (un solo host per finestra, un avviso sostituisce il
+ * precedente invece di accodarsi).
  */
 @Composable
-internal fun WindowFrame(snackbar: SnackbarHostState = remember { SnackbarHostState() }, content: @Composable () -> Unit) {
+internal fun WindowFrame(notices: NoticePresenter = rememberNoticePresenter(), content: @Composable () -> Unit) {
     AppTheme {
-        CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {
+        CompositionLocalProvider(LocalNoticePresenter provides notices) {
             Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize()) {
                     content()
-                    AppSnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
+                    AppSnackbarHost(notices.hostState, Modifier.align(Alignment.BottomCenter))
                 }
             }
         }

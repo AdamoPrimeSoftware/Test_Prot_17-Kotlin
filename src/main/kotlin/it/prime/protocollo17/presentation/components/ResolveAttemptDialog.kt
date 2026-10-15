@@ -49,8 +49,10 @@ import it.prime.protocollo17.presentation.util.formatTime
 /**
  * Contenuto del dialog di risoluzione di un tentativo (§6.8), costruito dal ViewModel (Console o Journal).
  *
- * [evidence] e [otherUnresolved] sono un'aggiunta alla firma di §6.3 (con default, compatibile): servono al
- * riepilogo richiesto da §6.8 ("con le prove allegate" e la spiegazione che G riporta solo l'ultima transazione).
+ * [evidence], [otherUnresolved], [notice] e [resolving] sono un'aggiunta alla firma di §6.3 (con default,
+ * compatibile): i primi tre servono al riepilogo richiesto da §6.8 ("con le prove allegate" e la spiegazione che G
+ * riporta solo l'ultima transazione); [resolving] disabilita le decisioni mentre il journal scrive la chiusura, così
+ * un doppio clic non tenta di chiudere due volte lo stesso tentativo.
  */
 data class ResolveDialogModel(
     val attemptId: String, val attemptTitle: String, val attemptTime: String, val reason: String,
@@ -62,6 +64,10 @@ data class ResolveDialogModel(
     val evidence: List<String> = emptyList(),
     /** Altri tentativi non risolti oltre a questo: G riporta solo l'ultima transazione, i più vecchi vanno chiusi a mano. */
     val otherUnresolved: Int = 0,
+    /** Avviso in evidenza nel dialog (es. "l'esito di G riguarda un altro tentativo, più recente"). */
+    val notice: String? = null,
+    /** true mentre la chiusura è in scrittura nel journal: decisioni disabilitate. */
+    val resolving: Boolean = false,
 )
 
 /**
@@ -80,6 +86,9 @@ fun ResolveAttemptDialog(model: ResolveDialogModel, onResolve: (ResolutionKind, 
     }
     var verified by remember(model.attemptId) { mutableStateOf(false) }
     val noteOk = note.isNotBlank()
+    // Mentre il journal scrive la chiusura nessuna decisione è cliccabile: un secondo clic la ritenterebbe su un
+    // tentativo già chiuso e mostrerebbe un errore subito dopo una chiusura riuscita.
+    val canDecide = noteOk && !model.resolving
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -127,25 +136,25 @@ fun ResolveAttemptDialog(model: ResolveDialogModel, onResolve: (ResolutionKind, 
                 val verdict = model.assessment?.verdict
                 when {
                     model.reviewOnly -> Button(
-                        enabled = noteOk && (g != null || verified),
+                        enabled = canDecide && (g != null || verified),
                         onClick = { onResolve(ResolutionKind.REVIEWED, note.trim()) },
                     ) { Text("Verificato: nessun doppio addebito (o già stornato)") }
                     g != null -> {
                         DecisionButton(
                             text = "Il tentativo non è stato eseguito",
                             suggested = verdict == GVerdict.LIKELY_PREVIOUS_RESULT,
-                            enabled = noteOk,
+                            enabled = canDecide,
                             onClick = { onResolve(ResolutionKind.NOT_EXECUTED, note.trim()) },
                         )
                         DecisionButton(
                             text = "L'esito G appartiene al tentativo",
                             suggested = verdict == GVerdict.LIKELY_THIS_ATTEMPT,
-                            enabled = noteOk,
+                            enabled = canDecide,
                             onClick = { onResolve(ResolutionKind.CONFIRMED_BY_G, note.trim()) },
                         )
                     }
                     else -> Button(
-                        enabled = noteOk && verified,
+                        enabled = canDecide && verified,
                         onClick = { onResolve(ResolutionKind.DISMISSED, note.trim()) },
                     ) { Text("Chiudi tentativo") }
                 }
@@ -169,6 +178,16 @@ private fun AttemptSummary(model: ResolveDialogModel) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("${model.attemptTitle} delle ${model.attemptTime}", style = MaterialTheme.typography.titleSmall)
         Text(model.reason, style = MaterialTheme.typography.bodyMedium, color = WarningAmber)
+        model.notice?.let { notice ->
+            Surface(
+                color = WarningAmber.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, WarningAmber),
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(notice, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(10.dp))
+            }
+        }
         if (model.otherUnresolved > 0) {
             Text(
                 "Ci sono altri ${model.otherUnresolved} tentativi da risolvere: G riporta SOLO l'ultima transazione del " +
@@ -271,6 +290,27 @@ private fun ResolveAttemptDialogWithoutGPreview() {
                 attemptId = "a2", attemptTitle = "Verifica carta", attemptTime = "14/10 10:01:00",
                 reason = "possibile doppio addebito", reviewOnly = true, gResult = null, assessment = null,
                 evidence = listOf("025757330E00***************4768CLIR48432…"),
+            ),
+            onResolve = { _, _ -> },
+            onDismiss = {},
+        )
+    }
+}
+
+/** Tentativo più vecchio dopo un G (che riguarda il più recente): chiusura a mano, decisioni bloccate durante la scrittura. */
+@Suppress("unused")
+@Preview
+@Composable
+private fun ResolveAttemptDialogOlderAttemptPreview() {
+    PreviewTheme(darkTheme = true) {
+        ResolveAttemptDialog(
+            model = ResolveDialogModel(
+                attemptId = "a3", attemptTitle = "Verifica carta", attemptTime = "14/10 09:20:00",
+                reason = "nessun esito entro 120 s", reviewOnly = false, gResult = null, assessment = null,
+                otherUnresolved = 1,
+                notice = "L'esito di Ultimo esito (G) riguarda il tentativo più recente (Preautorizzazione 10,00 € delle " +
+                    "14/10 09:35:05), non questo: chiudilo a mano dopo averlo verificato.",
+                resolving = true,
             ),
             onResolve = { _, _ -> },
             onDismiss = {},

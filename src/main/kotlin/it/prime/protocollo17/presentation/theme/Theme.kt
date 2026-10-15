@@ -16,11 +16,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import it.prime.protocollo17.data.local.settings.SettingsRepository
 import it.prime.protocollo17.domain.model.settings.ThemeMode
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import org.koin.compose.koinInject
 
 /**
@@ -46,13 +49,21 @@ fun appScrollbarStyle(color: Color): ScrollbarStyle = ScrollbarStyle(
  * Ogni slot è animato insieme al suo colore "on": animare un contenitore e far saltare il testo al colore
  * d'arrivo rende il testo illeggibile per i 350 ms della transizione (chiaro su chiaro), come accadeva in
  * LocalDesktopAi prima della regola.
+ *
+ * Prima si raccoglieva l'intero `settings.flow`: ogni salvataggio (una bozza a ogni tasto, la geometria delle
+ * finestre, l'ultimo comando) ricomponeva AppTheme e creava un nuovo ColorScheme, che invalidava l'intero albero di
+ * OGNI finestra aperta mentre l'operatore scriveva. Ora si osserva solo `themeMode` (distinctUntilChanged): AppTheme
+ * si ricompone solo al cambio di tema e durante i 350 ms dell'animazione.
  */
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
     val settingsRepository: SettingsRepository = koinInject()
-    val settings by settingsRepository.flow.collectAsState()
+    val themeModeFlow = remember(settingsRepository) {
+        settingsRepository.flow.map { it.ui.themeMode }.distinctUntilChanged()
+    }
+    val themeMode by themeModeFlow.collectAsState(initial = settingsRepository.getSnapshot().ui.themeMode)
     val systemDark = isSystemInDarkTheme()
-    val darkTheme = when (settings.ui.themeMode) {
+    val darkTheme = when (themeMode) {
         ThemeMode.Light -> false
         ThemeMode.Dark -> true
         ThemeMode.System -> systemDark

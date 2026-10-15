@@ -111,7 +111,7 @@ private fun StatusCard(state: SimulatorUiState, onAction: (SimulatorAction) -> U
             onTextChange = { onAction(SimulatorAction.SetNumber("port", it)) },
             suffix = null,
             error = state.fieldErrors["port"] ?: state.statusError,
-            hint = "Cambiarla con il simulatore attivo lo riavvia sulla nuova porta",
+            hint = "Salvata quando smetti di scrivere; con il simulatore attivo lo riavvia sulla nuova porta",
             modifier = Modifier.width(280.dp),
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

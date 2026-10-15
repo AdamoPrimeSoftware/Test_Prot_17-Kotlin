@@ -174,7 +174,15 @@ private fun Toolbar(state: TrafficLogUiState, onAction: (TrafficLogAction) -> Un
                 tooltip = if (state.paused) "Riprendi la vista" else "Pausa (congela la vista, la registrazione continua)",
                 onClick = { onAction(TrafficLogAction.TogglePause) },
             )
-            CopyIconButton(text = state.visible.joinToString("\n") { it.asText(withAscii = state.filter.showAscii) }, contentDescription = "Copia tutte le righe visibili")
+            // Testo costruito solo al clic e fuori dall'EDT: formattare 5 000 righe a ogni ripubblicazione (10 Hz) qui,
+            // in composizione, bloccherebbe la finestra proprio mentre l'operatore la guarda (§6.12).
+            val visible = state.visible
+            val withAscii = filter.showAscii
+            CopyIconButton(
+                textProvider = { visible.joinToString("\n") { it.asText(withAscii = withAscii) } },
+                contentDescription = "Copia tutte le righe visibili",
+                enabled = visible.isNotEmpty(),
+            )
             TooltipIconButton(icon = Icons.Filled.SaveAs, tooltip = "Esporta le righe visibili…", onClick = onExport, enabled = state.visible.isNotEmpty())
             TooltipIconButton(icon = Icons.Filled.DeleteSweep, tooltip = "Svuota la memoria (il file resta)", onClick = { onAction(TrafficLogAction.ClearMemory) })
             TooltipIconButton(icon = Icons.Filled.FolderOpen, tooltip = "Apri la cartella dei log", onClick = onOpenFolder)

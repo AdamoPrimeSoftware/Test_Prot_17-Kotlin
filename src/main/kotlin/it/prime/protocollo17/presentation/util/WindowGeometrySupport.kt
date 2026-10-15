@@ -1,5 +1,7 @@
 package it.prime.protocollo17.presentation.util
 
+import androidx.compose.desktop.ui.tooling.preview.Preview
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -15,6 +17,7 @@ import androidx.compose.ui.window.rememberWindowState
 import it.prime.protocollo17.domain.model.settings.WindowGeometry
 import it.prime.protocollo17.presentation.state.AppWindowId
 import it.prime.protocollo17.presentation.state.AppWindows
+import it.prime.protocollo17.presentation.theme.PreviewTheme
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
@@ -115,5 +118,21 @@ fun FrameWindowScope.ApplyMinimumSize(spec: WindowSpec) {
     LaunchedEffect(spec) {
         val (minWidth, minHeight) = effectiveMinimum(spec, readWorkArea())
         window.minimumSize = Dimension(minWidth.roundToInt(), minHeight.roundToInt())
+    }
+}
+
+// ─── Preview ──────────────────────────────────────────────────────────────────────
+
+@Suppress("unused")
+@Preview
+@Composable
+private fun WindowGeometrySupportPreview() {
+    // rememberPersistedWindowState, BringToFrontOn e ApplyMinimumSize richiedono una finestra vera: l'anteprima mostra
+    // solo le regole che applicano.
+    PreviewTheme {
+        Text(
+            "Geometria delle finestre: effetti senza UI (salvataggio in continuo con debounce di 500 ms, primo piano a " +
+                "ogni apertura, minimo imposto e ridotto all'area di lavoro)",
+        )
     }
 }

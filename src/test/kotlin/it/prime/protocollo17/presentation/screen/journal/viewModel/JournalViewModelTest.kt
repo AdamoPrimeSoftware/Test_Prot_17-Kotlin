@@ -17,6 +17,8 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.runs
+import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -114,6 +116,8 @@ class JournalViewModelTest {
     /** G dal Journal passa dal runner con origine JOURNAL; al termine si apre il dialog per il tentativo scelto. */
     @Test
     fun `RunLastResult esegue G dal Journal e apre il dialog per il tentativo selezionato`() {
+        // Il tentativo scelto è l'unico (quindi il più recente) da risolvere: G si lega a lui.
+        unresolvedFlow.value = listOf(review)
         val vm = vm()
         vm.onAction(JournalAction.Select("a-review"))
         vm.onAction(JournalAction.RunLastResult)
@@ -128,6 +132,62 @@ class JournalViewModelTest {
 
         vm.onAction(JournalAction.Resolve("a-review", ResolutionKind.REVIEWED, "Totali controllati"))
         coVerify { journal.resolve("a-review", ResolutionKind.REVIEWED, "Totali controllati", g) }
+        assertNull(vm.uiState.value.dialog)
+    }
+
+    /**
+     * G riporta solo l'ultima transazione del terminale (§6.8): con un tentativo più recente da risolvere, il G
+     * lanciato su uno più vecchio NON si lega a quello selezionato. Il dialog si apre per il selezionato senza G
+     * (chiusura a mano) e spiega a chi appartiene l'esito; nessun "L'esito G appartiene al tentativo".
+     */
+    @Test
+    fun `G lanciato su un tentativo piu' vecchio non si lega a lui`() {
+        unresolvedFlow.value = listOf(unknownPayment, review)
+        val vm = vm()
+        vm.onAction(JournalAction.Select("a-review"))
+        vm.onAction(JournalAction.RunLastResult)
+        runner.finish(UiFixtures.answered(CommandCode.LAST_RESULT, UiFixtures.payment()))
+        val model = (vm.uiState.value.dialog as JournalDialog.Resolve).model
+        assertEquals("a-review", model.attemptId)
+        assertNull(model.gResult, "G non va mostrato come esito di un tentativo più vecchio")
+        assertNull(model.assessment)
+        assertTrue(model.notice!!.contains("più recente"), model.notice)
+        assertEquals(1, model.otherUnresolved)
+        verify(exactly = 0) { journal.knownResultsBefore("a-review") }
+
+        vm.onAction(JournalAction.Resolve("a-review", ResolutionKind.REVIEWED, "Totali controllati"))
+        coVerify { journal.resolve("a-review", ResolutionKind.REVIEWED, "Totali controllati", null) }
+    }
+
+    /** Senza selezione (o con il più recente selezionato) G si lega al più recente non risolto, come nella Console. */
+    @Test
+    fun `G senza selezione si lega al piu' recente non risolto`() {
+        unresolvedFlow.value = listOf(unknownPayment, review)
+        val vm = vm()
+        vm.onAction(JournalAction.RunLastResult)
+        val g = UiFixtures.answered(CommandCode.LAST_RESULT, UiFixtures.payment())
+        runner.finish(g)
+        val model = (vm.uiState.value.dialog as JournalDialog.Resolve).model
+        assertEquals("a-unknown", model.attemptId)
+        assertNotNull(model.gResult)
+        assertNotNull(model.assessment)
+        assertNull(model.notice)
+        vm.onAction(JournalAction.Resolve("a-unknown", ResolutionKind.CONFIRMED_BY_G, "Verificato con G"))
+        coVerify { journal.resolve("a-unknown", ResolutionKind.CONFIRMED_BY_G, "Verificato con G", g) }
+    }
+
+    /** Doppio clic: una sola chiusura nel journal mentre la prima è in scrittura. */
+    @Test
+    fun `Resolve ignorato mentre una chiusura e' in corso`() {
+        val gate = CompletableDeferred<Unit>()
+        coEvery { journal.resolve(any(), any(), any(), any()) } coAnswers { gate.await() }
+        val vm = vm()
+        vm.onAction(JournalAction.OpenResolve("a-unknown"))
+        vm.onAction(JournalAction.Resolve("a-unknown", ResolutionKind.DISMISSED, "scontrino verificato"))
+        assertTrue((vm.uiState.value.dialog as JournalDialog.Resolve).model.resolving)
+        vm.onAction(JournalAction.Resolve("a-unknown", ResolutionKind.DISMISSED, "scontrino verificato"))
+        coVerify(exactly = 1) { journal.resolve(any(), any(), any(), any()) }
+        gate.complete(Unit)
         assertNull(vm.uiState.value.dialog)
     }
 

@@ -40,9 +40,11 @@ import io.mockk.just
 import io.mockk.mockk
 import io.mockk.runs
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -295,6 +297,67 @@ class ConsoleViewModelTest {
         assertFalse(vm.uiState.value.canCancel, "dopo la richiesta il pulsante diventa 'Annullamento…'")
     }
 
+    /**
+     * La copia dello stato nel VM arriva con un dispatch di ritardo: se Esc arriva proprio mentre il pagamento passa
+     * a SENDING, la decisione si prende sullo stato vero del runner e chiede conferma invece di interrompere.
+     */
+    @Test
+    fun `RequestCancel decide sullo stato corrente del runner, non sulla copia in ritardo`() {
+        val main = StandardTestDispatcher()
+        Dispatchers.setMain(main)
+        val vm = vm()
+        main.scheduler.runCurrent()
+        vm.onAction(ConsoleAction.RunSelected)
+        main.scheduler.runCurrent()
+        runner.setPhase(ExchangePhase.SENDING)
+        assertFalse(vm.uiState.value.running!!.requestSent, "precondizione: la copia del VM è ancora prima dell'invio")
+        vm.onAction(ConsoleAction.RequestCancel)
+        assertEquals(0, runner.cancelCalls, "un pagamento già inviato non si interrompe senza conferma")
+        assertTrue(vm.uiState.value.dialog is ConsoleDialog.ConfirmCancelAfterSend)
+    }
+
+    /** Il servizio passa a SENDING tra la lettura e l'annullamento: l'operatore sa subito che l'esito è sconosciuto. */
+    @Test
+    fun `annullamento finito dopo l'invio avvisa che l'esito e' sconosciuto`() = runTest {
+        val vm = vm()
+        vm.onAction(ConsoleAction.RunSelected)
+        runner.phaseOnCancel = ExchangePhase.SENDING
+        vm.events.test {
+            vm.onAction(ConsoleAction.RequestCancel)
+            val event = awaitItem() as ConsoleEvent.ShowError
+            assertTrue(event.message.contains("SCONOSCIUTO"), event.message)
+        }
+        assertEquals(1, runner.cancelCalls)
+    }
+
+    /** La conferma vale per il comando del dialog: se nel frattempo ne è partito un altro, non si annulla nulla. */
+    @Test
+    fun `ConfirmCancel non annulla un comando diverso da quello del dialog`() = runTest {
+        val vm = vm()
+        vm.onAction(ConsoleAction.RunSelected)
+        runner.setPhase(ExchangePhase.AWAITING_RESULT)
+        vm.onAction(ConsoleAction.RequestCancel)
+        assertTrue(vm.uiState.value.dialog is ConsoleDialog.ConfirmCancelAfterSend)
+        // Il pagamento finisce e parte un H prima che il VM chiuda il dialog (stato saltato direttamente).
+        runner.setState(RunnerState(running = UiFixtures.running(CommandCode.CARD_VERIFICATION, ExchangePhase.AWAITING_RESULT)))
+        vm.events.test {
+            vm.onAction(ConsoleAction.ConfirmCancel)
+            assertEquals(ConsoleEvent.ShowInfo("Il comando è già terminato: nulla da annullare"), awaitItem())
+        }
+        assertEquals(0, runner.cancelCalls)
+        assertNull(vm.uiState.value.dialog)
+    }
+
+    /** ConfirmCancel senza il dialog aperto (azione stantia) non annulla nulla. */
+    @Test
+    fun `ConfirmCancel senza dialog non annulla`() {
+        val vm = vm()
+        vm.onAction(ConsoleAction.RunSelected)
+        runner.setPhase(ExchangePhase.SENDING)
+        vm.onAction(ConsoleAction.ConfirmCancel)
+        assertEquals(0, runner.cancelCalls)
+    }
+
     // ─── Stato (F5) ───────────────────────────────────────────────────────────────
 
     @Test
@@ -366,6 +429,40 @@ class ConsoleViewModelTest {
         coVerify(exactly = 0) { journal.resolve(any(), any(), any(), any()) }
         vm.onAction(ConsoleAction.Resolve("attempt-9", ResolutionKind.DISMISSED, "scontrino controllato"))
         coVerify { journal.resolve("attempt-9", ResolutionKind.DISMISSED, "scontrino controllato", null) }
+    }
+
+    /** Doppio clic su una decisione: una sola scrittura nel journal, decisioni disabilitate mentre scrive. */
+    @Test
+    fun `Resolve ignorato mentre una chiusura e' in corso`() = runTest {
+        unresolvedFlow.value = listOf(UiFixtures.entry(attemptId = "attempt-9"))
+        val gate = CompletableDeferred<Unit>()
+        coEvery { journal.resolve(any(), any(), any(), any()) } coAnswers { gate.await() }
+        val vm = vm()
+        vm.onAction(ConsoleAction.OpenResolve("attempt-9"))
+        vm.onAction(ConsoleAction.Resolve("attempt-9", ResolutionKind.DISMISSED, "scontrino controllato"))
+        assertTrue((vm.uiState.value.dialog as ConsoleDialog.Resolve).model.resolving, "decisioni disabilitate")
+        vm.onAction(ConsoleAction.Resolve("attempt-9", ResolutionKind.NOT_EXECUTED, "secondo clic"))
+        coVerify(exactly = 1) { journal.resolve(any(), any(), any(), any()) }
+        vm.events.test {
+            gate.complete(Unit)
+            assertTrue(awaitItem() is ConsoleEvent.ShowSuccess)
+        }
+        assertNull(vm.uiState.value.dialog)
+    }
+
+    /** Chiusura fallita: il dialog resta aperto e le decisioni tornano cliccabili per riprovare. */
+    @Test
+    fun `Resolve fallito riabilita le decisioni`() = runTest {
+        unresolvedFlow.value = listOf(UiFixtures.entry(attemptId = "attempt-9"))
+        coEvery { journal.resolve(any(), any(), any(), any()) } throws IllegalStateException("disco pieno")
+        val vm = vm()
+        vm.onAction(ConsoleAction.OpenResolve("attempt-9"))
+        vm.events.test {
+            vm.onAction(ConsoleAction.Resolve("attempt-9", ResolutionKind.DISMISSED, "scontrino controllato"))
+            assertTrue((awaitItem() as ConsoleEvent.ShowError).message.contains("resta bloccante"))
+        }
+        val model = (vm.uiState.value.dialog as ConsoleDialog.Resolve).model
+        assertFalse(model.resolving)
     }
 
     // ─── Cronologia ───────────────────────────────────────────────────────────────

@@ -10,8 +10,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,8 +38,9 @@ import it.prime.protocollo17.domain.model.journal.JournalPhase
 import it.prime.protocollo17.domain.model.simulator.SimulatorFailure
 import it.prime.protocollo17.domain.model.simulator.SimulatorStatus
 import it.prime.protocollo17.domain.repository.SimulatorController
+import it.prime.protocollo17.presentation.components.NoticePresenter
 import it.prime.protocollo17.presentation.components.NoticeTone
-import it.prime.protocollo17.presentation.components.showNotice
+import it.prime.protocollo17.presentation.components.rememberNoticePresenter
 import it.prime.protocollo17.presentation.screen.main.MainScreen
 import it.prime.protocollo17.presentation.state.AppNotifications
 import it.prime.protocollo17.presentation.state.AppWindowId
@@ -165,10 +164,10 @@ fun MainWindow(onBeforeExit: () -> Unit, startupRecovered: List<JournalEntry>, o
             }
         }
 
-        val snackbar = remember { SnackbarHostState() }
-        NotificationsEffect(notifications, snackbar, windows, simulator, startupRecovered)
+        val notices = rememberNoticePresenter()
+        NotificationsEffect(notifications, notices, windows, simulator, startupRecovered)
 
-        WindowFrame(snackbar = snackbar) {
+        WindowFrame(notices = notices) {
             Navigator(remember { MainScreen() }, key = "nav-main") { CurrentScreen() }
             if (confirmClose) CloseConfirmDialog(onConfirm = ::exitNow, onDismiss = { confirmClose = false })
             if (showAbout) AboutDialog(dataFolder = dirs.root.absolutePath, onDismiss = { showAbout = false })
@@ -181,29 +180,32 @@ fun MainWindow(onBeforeExit: () -> Unit, startupRecovered: List<JournalEntry>, o
  * riepilogo del recupero all'avvio e ogni passaggio del simulatore a Failed (anche dell'avvio automatico).
  *
  * Il collect parte UNDISPATCHED: AppNotifications non ha replay, e un avviso emesso prima dell'iscrizione andrebbe
- * perso. Ogni snackbar è lanciato a parte (showSnackbar sospende finché è visibile) e SOSTITUISCE il precedente.
+ * perso. Ogni avviso passa dal NoticePresenter della finestra, lo stesso degli eventi della Console: SOSTITUISCE
+ * quello visibile invece di accodarsi (§6.18).
  */
 @Composable
 private fun NotificationsEffect(
     notifications: AppNotifications,
-    snackbar: SnackbarHostState,
+    notices: NoticePresenter,
     windows: AppWindows,
     simulator: SimulatorController,
     startupRecovered: List<JournalEntry>,
 ) {
-    LaunchedEffect(notifications, snackbar) {
+    LaunchedEffect(notifications, notices) {
         launch(start = CoroutineStart.UNDISPATCHED) {
             notifications.events.collect { notice ->
-                launch {
-                    val tone = when (notice.kind) {
-                        AppNotifications.Kind.SUCCESS -> NoticeTone.SUCCESS
-                        AppNotifications.Kind.WARNING -> NoticeTone.WARNING
-                        AppNotifications.Kind.ERROR -> NoticeTone.ERROR
-                        AppNotifications.Kind.INFO -> NoticeTone.INFO
-                    }
-                    val result = snackbar.showNotice(tone, "${notice.source}: ${notice.message}", actionLabel = notice.openWindow?.let { "Apri" })
-                    if (result == SnackbarResult.ActionPerformed) notice.openWindow?.let(windows::open)
+                val tone = when (notice.kind) {
+                    AppNotifications.Kind.SUCCESS -> NoticeTone.SUCCESS
+                    AppNotifications.Kind.WARNING -> NoticeTone.WARNING
+                    AppNotifications.Kind.ERROR -> NoticeTone.ERROR
+                    AppNotifications.Kind.INFO -> NoticeTone.INFO
                 }
+                notices.show(
+                    tone = tone,
+                    message = "${notice.source}: ${notice.message}",
+                    actionLabel = notice.openWindow?.let { "Apri" },
+                    onAction = { notice.openWindow?.let(windows::open) },
+                )
             }
         }
         // G mai automatico (U7): all'avvio solo l'avviso; il banner della Console mostra i tentativi.

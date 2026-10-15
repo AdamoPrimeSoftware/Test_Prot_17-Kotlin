@@ -8,6 +8,7 @@ import it.prime.protocollo17.domain.repository.SimulatorController
 import it.prime.protocollo17.presentation.FakeSettings
 import it.prime.protocollo17.presentation.popStandaloneScreenModels
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -36,9 +37,12 @@ class SimulatorViewModelTest {
     private lateinit var settings: FakeSettings
     private lateinit var simulator: SimulatorController
 
+    /** Main in tempo virtuale: il debounce della porta si fa avanzare con advanceTimeBy. */
+    private val main = UnconfinedTestDispatcher()
+
     @BeforeEach
     fun setUp() {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        Dispatchers.setMain(main)
         settings = FakeSettings()
         simulator = mockk(relaxed = true) {
             every { this@mockk.status } returns this@SimulatorViewModelTest.status
@@ -97,7 +101,7 @@ class SimulatorViewModelTest {
         assertEquals("std", settings.value.simulator.appLrcMode)
     }
 
-    /** La porta sbagliata resta scritta con l'errore; quella valida è salvata (il controller riavvia). */
+    /** La porta sbagliata resta scritta con l'errore; quella valida è salvata dopo la pausa (il controller riavvia). */
     @Test
     fun `porta non valida resta visibile e non si salva`() {
         val vm = vm()
@@ -106,7 +110,63 @@ class SimulatorViewModelTest {
         assertNotNull(vm.uiState.value.fieldErrors["port"])
         assertEquals(15577, settings.value.simulator.port)
         vm.onAction(SimulatorAction.SetNumber("port", "15600"))
-        assertEquals(15600, settings.value.simulator.port)
         assertNull(vm.uiState.value.fieldErrors["port"])
+        main.scheduler.advanceTimeBy(SimulatorViewModel.PORT_COMMIT_DELAY_MS + 1)
+        assertEquals(15600, settings.value.simulator.port)
+    }
+
+    /**
+     * Ogni cambio di porta riavvia il simulatore attivo: scrivendo 16000 non deve riavviarsi su 1, 16, 160 e 1600
+     * (una porta intermedia occupata darebbe un errore e troncherebbe un comando in corso). Una sola scrittura.
+     */
+    @Test
+    fun `la porta si salva una volta sola a fine digitazione`() {
+        val vm = vm()
+        val before = settings.updates
+        listOf("1", "16", "160", "1600", "16000").forEach { text ->
+            vm.onAction(SimulatorAction.SetNumber("port", text))
+            main.scheduler.advanceTimeBy(200)
+        }
+        assertEquals(15577, settings.value.simulator.port, "nessun salvataggio durante la digitazione")
+        assertEquals("16000", vm.uiState.value.texts["port"])
+        main.scheduler.advanceTimeBy(SimulatorViewModel.PORT_COMMIT_DELAY_MS)
+        assertEquals(16000, settings.value.simulator.port)
+        assertEquals(before + 1, settings.updates, "una sola scrittura della porta")
+    }
+
+    /** Il testo in attesa non torna al valore vecchio se nel frattempo cambia un'altra impostazione del simulatore. */
+    @Test
+    fun `porta in attesa non sovrascritta da altre impostazioni`() {
+        val vm = vm()
+        vm.onAction(SimulatorAction.SetNumber("port", "16000"))
+        vm.onAction(SimulatorAction.SetAutoStart(true))
+        assertEquals("16000", vm.uiState.value.texts["port"])
+        vm.onAction(SimulatorAction.SetNumber("ackDelayMs", "50"))
+        assertEquals(50L, settings.value.simulator.ackDelayMs, "i ritardi si salvano subito")
+        main.scheduler.advanceTimeBy(SimulatorViewModel.PORT_COMMIT_DELAY_MS + 1)
+        assertEquals(16000, settings.value.simulator.port)
+    }
+
+    /** Avvia usa la porta appena scritta, senza aspettare la pausa; un testo sbagliato annulla il salvataggio in attesa. */
+    @Test
+    fun `Avvia salva subito la porta in attesa e un errore la annulla`() {
+        val vm = vm()
+        vm.onAction(SimulatorAction.SetNumber("port", "16000"))
+        vm.onAction(SimulatorAction.SetNumber("port", "160000"))
+        main.scheduler.advanceTimeBy(SimulatorViewModel.PORT_COMMIT_DELAY_MS + 1)
+        assertEquals(15577, settings.value.simulator.port, "porta non valida: niente salvataggio del valore precedente")
+        vm.onAction(SimulatorAction.SetNumber("port", "16001"))
+        vm.onAction(SimulatorAction.Start)
+        assertEquals(16001, settings.value.simulator.port)
+        coVerify { simulator.start() }
+    }
+
+    /** Chiudendo la finestra subito dopo aver scritto, la porta non va persa. */
+    @Test
+    fun `onDispose salva la porta in attesa`() {
+        val vm = vm()
+        vm.onAction(SimulatorAction.SetNumber("port", "16002"))
+        vm.onDispose()
+        assertEquals(16002, settings.value.simulator.port)
     }
 }
