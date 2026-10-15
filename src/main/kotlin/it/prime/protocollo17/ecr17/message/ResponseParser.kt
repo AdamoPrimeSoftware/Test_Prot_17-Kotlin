@@ -120,15 +120,15 @@ object ResponseParser {
         when (layout) {
             PaymentLayout.BASE_71 -> Unit
             PaymentLayout.CARD_VERIFICATION_71 ->
-                if (ko) actionCode = f.raw(FieldId.ACTION_CODE, 37, 3).nullIfBlank()
+                if (ko) actionCode = f.raw(FieldId.ACTION_CODE, pos = 37, len = 3).nullIfBlank()
             PaymentLayout.EXTENDED_92 -> {
-                actionCode = f.raw(FieldId.ACTION_CODE, 72, 3).nullIfBlank()
-                hostAmountCents = digitsToLong(f.raw(FieldId.HOST_AMOUNT, 75, 8), 8)
+                actionCode = f.raw(FieldId.ACTION_CODE, pos = 72, len = 3).nullIfBlank()
+                hostAmountCents = digitsToLong(f.raw(FieldId.HOST_AMOUNT, pos = 75, len = 8), 8)
             }
-            PaymentLayout.REVERSAL_84 -> actionCode = f.raw(FieldId.ACTION_CODE, 72, 3).nullIfBlank()
+            PaymentLayout.REVERSAL_84 -> actionCode = f.raw(FieldId.ACTION_CODE, pos = 72, len = 3).nullIfBlank()
             PaymentLayout.DCC_117 -> {
-                actionCode = f.raw(FieldId.ACTION_CODE, 72, 3).nullIfBlank()
-                originalAmountCents = digitsToLong(f.raw(FieldId.ORIGINAL_AMOUNT, 75, 8), 8)
+                actionCode = f.raw(FieldId.ACTION_CODE, pos = 72, len = 3).nullIfBlank()
+                originalAmountCents = digitsToLong(f.raw(FieldId.ORIGINAL_AMOUNT, pos = 75, len = 8), 8)
                 dcc = f.dcc(flagPos = 83)
             }
         }
@@ -169,21 +169,21 @@ object ResponseParser {
         var errorDescription: String? = null
         var cardTypeRaw: String? = null
         if (!ko) {
-            pan = f.raw(FieldId.PAN, PAN_POS, PAN_LEN).nullIfBlank()
-            entryModeRaw = f.trimmed(FieldId.ENTRY_MODE, 32, 3)
-            authCode = f.trimmed(FieldId.AUTH_CODE, 35, 6)
-            amountRaw = f.raw(FieldId.PRE_AUTH_AMOUNT, 41, 8).nullIfBlank()
-            preAuthCode = f.raw(FieldId.PRE_AUTH_CODE, 49, 9).nullIfBlank()
-            actionCode = f.raw(FieldId.ACTION_CODE, 58, 3).nullIfBlank()
-            hostDateTimeRaw = f.raw(FieldId.HOST_DATE_TIME, 61, 7).nullIfBlank()
+            pan = f.raw(FieldId.PAN, pos = PAN_POS, len = PAN_LEN).nullIfBlank()
+            entryModeRaw = f.trimmed(FieldId.ENTRY_MODE, pos = 32, len = 3)
+            authCode = f.trimmed(FieldId.AUTH_CODE, pos = 35, len = 6)
+            amountRaw = f.raw(FieldId.PRE_AUTH_AMOUNT, pos = 41, len = 8).nullIfBlank()
+            preAuthCode = f.raw(FieldId.PRE_AUTH_CODE, pos = 49, len = 9).nullIfBlank()
+            actionCode = f.raw(FieldId.ACTION_CODE, pos = 58, len = 3).nullIfBlank()
+            hostDateTimeRaw = f.raw(FieldId.HOST_DATE_TIME, pos = 61, len = 7).nullIfBlank()
         } else {
-            errorDescription = f.trimmed(FieldId.ERROR_DESCRIPTION, 13, 24)
-            actionCode = f.raw(FieldId.ACTION_CODE, 37, 3).nullIfBlank()
-            cardTypeRaw = f.raw(FieldId.CARD_TYPE, 48, 1).nullIfBlank()
+            errorDescription = f.trimmed(FieldId.ERROR_DESCRIPTION, pos = 13, len = 24)
+            actionCode = f.raw(FieldId.ACTION_CODE, pos = 37, len = 3).nullIfBlank()
+            cardTypeRaw = f.raw(FieldId.CARD_TYPE, pos = 48, len = 1).nullIfBlank()
         }
-        val acquirerId = f.trimmed(FieldId.ACQUIRER_ID, 72, 11)
-        val stan = f.raw(FieldId.STAN, 83, 6).nullIfBlank()
-        val onlineId = f.raw(FieldId.ONLINE_ID, 89, 6).nullIfBlank()
+        val acquirerId = f.trimmed(FieldId.ACQUIRER_ID, pos = 72, len = 11)
+        val stan = f.raw(FieldId.STAN, pos = 83, len = 6).nullIfBlank()
+        val onlineId = f.raw(FieldId.ONLINE_ID, pos = 89, len = 6).nullIfBlank()
 
         return PreAuthResponse(
             raw = f.rawPayload(), terminalId = head.terminalId, replyCode = head.replyCode, fields = f.fields(),
@@ -205,14 +205,14 @@ object ResponseParser {
     fun parseIncrementalAuth(payload: ByteArray, maskPan: Boolean = true): IncrementalAuthResponse {
         val f = FieldCollector(source(payload, maskPan, panReadable = true))
         val head = f.header()
-        val pan = f.raw(FieldId.PAN, PAN_POS, PAN_LEN).nullIfBlank()
-        val entryModeRaw = f.trimmed(FieldId.ENTRY_MODE, 32, 3)
-        val acquirerId = f.trimmed(FieldId.ACQUIRER_ID, 35, 11)
-        val authCode = f.trimmed(FieldId.AUTH_CODE, 46, 6)
-        val stan = f.raw(FieldId.STAN, 52, 6).nullIfBlank()
-        val onlineId = f.raw(FieldId.ONLINE_ID, 58, 6).nullIfBlank()
-        val hostDateTimeRaw = f.raw(FieldId.HOST_DATE_TIME, 64, 7).nullIfBlank()
-        val actionCode = f.raw(FieldId.ACTION_CODE, 71, 3).nullIfBlank()
+        val pan = f.raw(FieldId.PAN, pos = PAN_POS, len = PAN_LEN).nullIfBlank()
+        val entryModeRaw = f.trimmed(FieldId.ENTRY_MODE, pos = 32, len = 3)
+        val acquirerId = f.trimmed(FieldId.ACQUIRER_ID, pos = 35, len = 11)
+        val authCode = f.trimmed(FieldId.AUTH_CODE, pos = 46, len = 6)
+        val stan = f.raw(FieldId.STAN, pos = 52, len = 6).nullIfBlank()
+        val onlineId = f.raw(FieldId.ONLINE_ID, pos = 58, len = 6).nullIfBlank()
+        val hostDateTimeRaw = f.raw(FieldId.HOST_DATE_TIME, pos = 64, len = 7).nullIfBlank()
+        val actionCode = f.raw(FieldId.ACTION_CODE, pos = 71, len = 3).nullIfBlank()
 
         return IncrementalAuthResponse(
             raw = f.rawPayload(), terminalId = head.terminalId, replyCode = head.replyCode, fields = f.fields(),
@@ -233,7 +233,7 @@ object ResponseParser {
         val f = FieldCollector(source(payload, maskPan, panReadable = !ko))
         val head = f.header()
         val base = f.base71(ko, readAuthCode = true)
-        val actionCode = f.raw(FieldId.ACTION_CODE, 72, 3).nullIfBlank()
+        val actionCode = f.raw(FieldId.ACTION_CODE, pos = 72, len = 3).nullIfBlank()
         val dcc = if (head.replyCode == 'v') f.dcc(flagPos = 75) else null
 
         return PreAuthClosureResponse(
@@ -256,10 +256,10 @@ object ResponseParser {
      */
     fun parseStatus(payload: ByteArray): StatusResponse {
         val f = FieldCollector(payload)
-        val terminalId = f.raw(FieldId.TERMINAL_ID, 1, 8)
+        val terminalId = f.raw(FieldId.TERMINAL_ID, pos = 1, len = 8)
         val replyCode = f.replyCode()
-        val dateTimeRaw = f.raw(FieldId.TERMINAL_DATE_TIME, 21, 10)
-        val statusChar = f.raw(FieldId.STATUS, 31, 1).firstOrNull()
+        val dateTimeRaw = f.raw(FieldId.TERMINAL_DATE_TIME, pos = 21, len = 10)
+        val statusChar = f.raw(FieldId.STATUS, pos = 31, len = 1).firstOrNull()
         val release = f.rest(FieldId.SOFTWARE_RELEASE, 32).trimEnd(' ')
 
         return StatusResponse(
@@ -274,7 +274,7 @@ object ResponseParser {
     fun parseTotals(payload: ByteArray): TotalsResponse {
         val f = FieldCollector(payload)
         val head = f.header()
-        val posTotalRaw = f.raw(FieldId.POS_TOTAL, 13, 16)
+        val posTotalRaw = f.raw(FieldId.POS_TOTAL, pos = 13, len = 16)
 
         return TotalsResponse(
             raw = f.rawPayload(), terminalId = head.terminalId, replyCode = head.replyCode, fields = f.fields(),
@@ -292,11 +292,11 @@ object ResponseParser {
         var errorDescription: String? = null
         var actionCode: String? = null
         if (head.resultCode == OK_RESULT) {
-            posTotalRaw = f.raw(FieldId.POS_TOTAL, 13, 16).nullIfBlank()
-            hostTotalRaw = f.raw(FieldId.HOST_TOTAL, 29, 16).nullIfBlank()
+            posTotalRaw = f.raw(FieldId.POS_TOTAL, pos = 13, len = 16).nullIfBlank()
+            hostTotalRaw = f.raw(FieldId.HOST_TOTAL, pos = 29, len = 16).nullIfBlank()
         } else {
-            errorDescription = f.trimmed(FieldId.ERROR_DESCRIPTION, 13, 19)
-            actionCode = f.raw(FieldId.ACTION_CODE, 32, 3).nullIfBlank()
+            errorDescription = f.trimmed(FieldId.ERROR_DESCRIPTION, pos = 13, len = 19)
+            actionCode = f.raw(FieldId.ACTION_CODE, pos = 32, len = 3).nullIfBlank()
         }
 
         return CloseSessionResponse(
@@ -415,12 +415,12 @@ object ResponseParser {
             return value
         }
 
-        fun replyCode(): Char = raw(FieldId.REPLY_CODE, 10, 1).firstOrNull() ?: MISSING_REPLY_CODE
+        fun replyCode(): Char = raw(FieldId.REPLY_CODE, pos = 10, len = 1).firstOrNull() ?: MISSING_REPLY_CODE
 
         fun header(): Header = Header(
-            terminalId = raw(FieldId.TERMINAL_ID, 1, 8),
+            terminalId = raw(FieldId.TERMINAL_ID, pos = 1, len = 8),
             replyCode = replyCode(),
-            resultCode = raw(FieldId.RESULT_CODE, 11, 2),
+            resultCode = raw(FieldId.RESULT_CODE, pos = 11, len = 2),
         )
 
         /**
@@ -434,20 +434,20 @@ object ResponseParser {
             var hostDateTimeRaw: String? = null
             var errorDescription: String? = null
             if (!ko) {
-                pan = raw(FieldId.PAN, PAN_POS, PAN_LEN).nullIfBlank()
-                entryModeRaw = trimmed(FieldId.ENTRY_MODE, 32, 3)
-                if (readAuthCode) authCode = trimmed(FieldId.AUTH_CODE, 35, 6)
-                hostDateTimeRaw = raw(FieldId.HOST_DATE_TIME, 41, 7).nullIfBlank()
+                pan = raw(FieldId.PAN, pos = PAN_POS, len = PAN_LEN).nullIfBlank()
+                entryModeRaw = trimmed(FieldId.ENTRY_MODE, pos = 32, len = 3)
+                if (readAuthCode) authCode = trimmed(FieldId.AUTH_CODE, pos = 35, len = 6)
+                hostDateTimeRaw = raw(FieldId.HOST_DATE_TIME, pos = 41, len = 7).nullIfBlank()
             } else {
-                errorDescription = trimmed(FieldId.ERROR_DESCRIPTION, 13, 24)
+                errorDescription = trimmed(FieldId.ERROR_DESCRIPTION, pos = 13, len = 24)
             }
             return BaseFields(
                 pan = pan, entryModeRaw = entryModeRaw, authCode = authCode, hostDateTimeRaw = hostDateTimeRaw,
                 errorDescription = errorDescription,
-                cardTypeRaw = raw(FieldId.CARD_TYPE, 48, 1).nullIfBlank(),
-                acquirerId = trimmed(FieldId.ACQUIRER_ID, 49, 11),
-                stan = raw(FieldId.STAN, 60, 6).nullIfBlank(),
-                onlineId = raw(FieldId.ONLINE_ID, 66, 6).nullIfBlank(),
+                cardTypeRaw = raw(FieldId.CARD_TYPE, pos = 48, len = 1).nullIfBlank(),
+                acquirerId = trimmed(FieldId.ACQUIRER_ID, pos = 49, len = 11),
+                stan = raw(FieldId.STAN, pos = 60, len = 6).nullIfBlank(),
+                onlineId = raw(FieldId.ONLINE_ID, pos = 66, len = 6).nullIfBlank(),
             )
         }
 
@@ -458,11 +458,11 @@ object ResponseParser {
          */
         fun dcc(flagPos: Int): DccInfo? {
             if (reader.length < flagPos) return null
-            val flag = raw(FieldId.DCC_APPLIED, flagPos, 1)
-            val rateRaw = raw(FieldId.DCC_RATE, flagPos + 1, 8)
-            val currency = raw(FieldId.DCC_CURRENCY, flagPos + 9, 3)
-            val amountRaw = raw(FieldId.DCC_AMOUNT, flagPos + 12, 12)
-            val precisionRaw = raw(FieldId.DCC_PRECISION, flagPos + 24, 1)
+            val flag = raw(FieldId.DCC_APPLIED, pos = flagPos, len = 1)
+            val rateRaw = raw(FieldId.DCC_RATE, pos = flagPos + 1, len = 8)
+            val currency = raw(FieldId.DCC_CURRENCY, pos = flagPos + 9, len = 3)
+            val amountRaw = raw(FieldId.DCC_AMOUNT, pos = flagPos + 12, len = 12)
+            val precisionRaw = raw(FieldId.DCC_PRECISION, pos = flagPos + 24, len = 1)
             return DccInfo(
                 applied = flag == "1",
                 rateRaw = rateRaw,

@@ -84,7 +84,11 @@ object RequestEncoder {
                 additionalGtData = false,
                 receiptText = request.receiptText,
             )
-            is ReversalRequest -> reversalWriter(tid, cashRegister(request.cashRegisterId), request.stan)
+            is ReversalRequest -> reversalWriter(
+                terminalId = tid,
+                cashRegisterId = cashRegister(request.cashRegisterId),
+                stan = request.stan,
+            )
             is PreAuthRequest -> paymentLikeWriter(
                 code = 'p',
                 terminalId = tid,
@@ -117,11 +121,11 @@ object RequestEncoder {
                 paymentType = request.paymentType,
                 additionalGtData = false,
             )
-            is CloseSessionRequest -> closeOrTotalsWriter('C', tid, cashRegister(request.cashRegisterId))
-            is TotalsRequest -> closeOrTotalsWriter('T', tid, cashRegister(request.cashRegisterId))
+            is CloseSessionRequest -> closeOrTotalsWriter(code = 'C', terminalId = tid, cashRegisterId = cashRegister(request.cashRegisterId))
+            is TotalsRequest -> closeOrTotalsWriter(code = 'T', terminalId = tid, cashRegisterId = cashRegister(request.cashRegisterId))
             is LastResultRequest -> lastResultWriter(tid, cashRegister(request.cashRegisterId))
             is EcrPrintingRequest -> ecrPrintingWriter(tid, request.enabled)
-            is ReprintRequest -> reprintWriter(tid, request.target, request.ticketType)
+            is ReprintRequest -> reprintWriter(terminalId = tid, target = request.target, ticketType = request.ticketType)
         }
     }
 
@@ -163,15 +167,20 @@ object RequestEncoder {
 
     /** `H` (39 B, A§4.3.3): tipo verifica '0' (unico valore ufficiale). */
     fun buildCardVerification(terminalId: String, cashRegisterId: String, paymentType: PaymentType, additionalGtData: Boolean = false): ByteArray =
-        cardVerificationWriter(terminalId, cashRegisterId, paymentType, additionalGtData).toByteArray()
+        cardVerificationWriter(
+            terminalId = terminalId,
+            cashRegisterId = cashRegisterId,
+            paymentType = paymentType,
+            additionalGtData = additionalGtData,
+        ).toByteArray()
 
     /** `S` (26 B, A§4.3.9): stan null o vuoto ⇒ "000000" (ultima transazione). */
     fun buildReversal(terminalId: String, cashRegisterId: String, stan: String?): ByteArray =
-        reversalWriter(terminalId, cashRegisterId, stan).toByteArray()
+        reversalWriter(terminalId = terminalId, cashRegisterId = cashRegisterId, stan = stan).toByteArray()
 
     /** `C`/`T` (26 B, A§4.3.4). */
     fun buildCloseOrTotals(code: Char, terminalId: String, cashRegisterId: String): ByteArray =
-        closeOrTotalsWriter(code, terminalId, cashRegisterId).toByteArray()   // 'C' | 'T'
+        closeOrTotalsWriter(code = code, terminalId = terminalId, cashRegisterId = cashRegisterId).toByteArray()   // 'C' | 'T'
 
     /** `G` (22 B, A§4.3.5). */
     fun buildSendLastResult(terminalId: String, cashRegisterId: String): ByteArray =
@@ -183,19 +192,19 @@ object RequestEncoder {
 
     /** `R` (22 B, A§4.3.7): destinazione e tipo ticket sempre '0'/'1', mai NUL come la DLL. */
     fun buildReprint(terminalId: String, target: ReprintTarget, ticketType: TicketType): ByteArray =
-        reprintWriter(terminalId, target, ticketType).toByteArray()
+        reprintWriter(terminalId = terminalId, target = target, ticketType = ticketType).toByteArray()
 
     // ─── Layout (un FieldWriter per comando) ────────────────────────────────────
 
     /** Intestazione comune (A§4.1): TID left-pad '0' (1-8), '0' riservato (9), codice (10). */
     private fun FieldWriter.header(terminalId: String, code: Char) {
-        digits(RequestField.TERMINAL_ID, terminalId, ID_WIDTH)
+        digits(RequestField.TERMINAL_ID, terminalId, width = ID_WIDTH)
         char('0')
         char(code)
     }
 
     private fun FieldWriter.cashRegister(cashRegisterId: String) =
-        digits(RequestField.CASH_REGISTER_ID, cashRegisterId, ID_WIDTH)
+        digits(RequestField.CASH_REGISTER_ID, cashRegisterId, width = ID_WIDTH)
 
     private fun flag(value: Boolean): Char = if (value) '1' else '0'
 
@@ -245,9 +254,9 @@ object RequestEncoder {
      */
     private fun FieldWriter.preAuthCode(value: String) {
         if (value.isBlank()) {
-            required(RequestField.PRE_AUTH_CODE, PRE_AUTH_CODE_WIDTH)
+            required(RequestField.PRE_AUTH_CODE, width = PRE_AUTH_CODE_WIDTH)
         } else {
-            digits(RequestField.PRE_AUTH_CODE, value, PRE_AUTH_CODE_WIDTH)
+            digits(RequestField.PRE_AUTH_CODE, value, width = PRE_AUTH_CODE_WIDTH)
         }
     }
 
@@ -267,7 +276,11 @@ object RequestEncoder {
         FieldWriter(REVERSAL_LENGTH).apply {
             header(terminalId, 'S')                       // 1-10
             cashRegister(cashRegisterId)                  // 11-18
-            digits(RequestField.STAN, if (stan.isNullOrEmpty()) LAST_TRANSACTION_STAN else stan, STAN_WIDTH) // 19-24
+            digits(
+                field = RequestField.STAN,
+                value = if (stan.isNullOrEmpty()) LAST_TRANSACTION_STAN else stan,
+                width = STAN_WIDTH,
+            )                                             // 19-24
             char('0')                                     // 25 dati aggiuntivi GT
             char('0')                                     // 26 riservato
         }

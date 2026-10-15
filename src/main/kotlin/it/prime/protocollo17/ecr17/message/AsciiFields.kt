@@ -118,10 +118,10 @@ internal class FieldWriter(private val capacity: Int) {
                 repeat(AMOUNT_WIDTH) { put('0'.code) }
             }
             cents > MAX_AMOUNT_CENTS -> {
-                collected += ValidationError.FieldOverflow(RequestField.AMOUNT, cents.toString(), AMOUNT_WIDTH)
+                collected += ValidationError.FieldOverflow(RequestField.AMOUNT, cents.toString(), width = AMOUNT_WIDTH)
                 repeat(AMOUNT_WIDTH) { put('0'.code) }
             }
-            else -> digits(RequestField.AMOUNT, cents.toString(), AMOUNT_WIDTH)
+            else -> digits(RequestField.AMOUNT, cents.toString(), width = AMOUNT_WIDTH)
         }
     }
 
@@ -131,7 +131,7 @@ internal class FieldWriter(private val capacity: Int) {
      * stampa solo i caratteri validi. Allinearlo a sinistra come farebbe istintivamente un padEnd è un bug noto.
      */
     fun receiptText(value: String) {
-        padStart(RequestField.RECEIPT_TEXT, value, RECEIPT_TEXT_WIDTH, ' ')
+        padStart(RequestField.RECEIPT_TEXT, value, width = RECEIPT_TEXT_WIDTH, pad = ' ')
     }
 
     /**
