@@ -791,9 +791,11 @@ Regole di `next()` (vincolanti, nell'ordine). `01` e `02` non sono **mai** un LR
 | `15` (NAK) | Servono ≥ 2 byte. `buf[1]` ∈ {`02`, `01`} ⇒ `Discarded(1 byte, AMBIGUOUS_NAK)`. `buf[1]` ≠ `03` ⇒ `Discarded(1 byte, CONTROL_WITHOUT_ETX)`. Con `buf[1]==03` servono 3 byte: `buf[2]` ∈ {`02`, `01`} ⇒ `Discarded(2 byte, AMBIGUOUS_NAK)`; LRC uguale a `WIRE` o `SAME_AS_APP` ⇒ `Control(NAK, match, lrc)`; altrimenti ⇒ `Discarded(3 byte, AMBIGUOUS_NAK)` **con qualsiasi** `ControlLrcRxPolicy`. Solo un `Control(NAK)` può far ritrasmettere (§3.21). |
 | `02` | Cerca il primo `03` a partire dall'indice 1. Se prima del `03` compare un altro `02` o un `01` ⇒ `Discarded(bytes fino al nuovo inizio escluso, RESYNC_ON_NEW_START)`. Se manca il `03` o il byte successivo ⇒ attende (oltre `maxFrameBytes` ⇒ `Discarded(1, OVERSIZED)`). Altrimenti estrae `STX…ETX LRC`: **il byte dopo ETX è l'LRC e non viene mai interpretato** (può valere 02/03/06/15, A§3.1). `AppLrcCheck` calcolato nelle 4 modalità. |
 | `01` | Cerca il primo `04`; un `02`/`01` annidato ⇒ resync come sopra; oltre 64 byte senza `04` ⇒ `Discarded(1, OVERSIZED)`. Estrae `Progress(text = byte interni)`. |
-| altro | Scarta; più byte consecutivi non riconosciuti vengono **accorpati** in un solo `Discarded(NOISE)`. |
+| altro | Scarta; più byte consecutivi non riconosciuti vengono **accorpati** in un solo `Discarded(NOISE)`, consegnato solo quando la sequenza è chiusa da un lead (`01 02 06 15`) o raggiunge `maxFrameBytes` (blocco di `maxFrameBytes` byte). Se il buffer finisce con del rumore, `next()` restituisce `null` e i byte restano pendenti: potrebbero continuare nel chunk successivo. |
 
 Proprietà: dare i byte in un solo chunk o uno alla volta produce la **stessa** sequenza di elementi (test di equivalenza). Lo splitter non conosce il comando inviato: la classificazione esito/orfano/scontrino è della sessione.
+
+**Residuo.** Per l'equivalenza, `next() == null` **non** vuol dire buffer vuoto: rumore in coda, un frame senza terminatore e `06`/`06 03`/`15`/`15 03` isolati restano pendenti finché arrivano altri byte. Ne escono solo con `flushBareControl()` (controlli isolati, alla scadenza dell'attesa ACK) o con `clear()`. Chi usa lo splitter chiama `clear()` a fine scambio e registra il residuo (§3.21); altrimenti quei byte spariscono dal log del traffico.
 
 ### 3.8 `wire/Hex.kt` e `wire/PanMasker.kt` [WP0→WP1]
 
@@ -821,6 +823,9 @@ object PanMasker {
      * - E, V, e, c, v: PAN (pos 13 len 19) mascherato se l'esito (pos 11-12) è diverso da "01";
      * - 'S' (riga di scontrino) e codici fuori dalle risposte v1 (U, K, altro): maskDigitRuns dalla pos 11;
      * - s, T, C: copia identica (nessun PAN; contengono lunghe sequenze di cifre che NON vanno toccate).
+     * Le sequenze del ramo maskDigitRuns si contano su tutto il payload: con il codice in pos 10 non numerico è
+     * come partire dalla pos 11 (TID + '0' = 9 cifre, sotto la soglia), e con una pos 10 numerica (intestazione
+     * spostata) un PAN iniziato prima della pos 11 non resta in chiaro.
      */
     fun maskApplicationPayload(payload: ByteArray): ByteArray
     /** Come sopra ma su un frame STX…ETX LRC completo; l'LRC resta quello originale. */
@@ -1878,6 +1883,7 @@ La sessione di **E1** (stampa su ECR, §3.23 punto 6) usa un proprio `TraceRecor
 **Primitive.**
 
 - `next(deadline): Next` con `Next = Item(SplitItem) | Timeout | LinkClosed(cause, detail)`. Ordine **vincolante**: (1) `splitter.next()`; (2) `rx.takeAll()` non vuoto ⇒ `feed` e ripeti; (3) `rx.closedCause` ⇒ `LinkClosed` (solo dopo aver consumato tutti i byte, contratto C++ A§6.2 punto 2); (4) deadline passata ⇒ `Timeout`; (5) `withTimeoutOrNull(rimanente) { rx.awaitDataOrClose() }` e ripeti. Ogni `Item` viene anche emesso come evento: `Wire` RX con `PanMasker.maskFrame` e `lrcNote`, oppure `Discarded` con `PanMasker.maskDigitRuns`. Un `Discarded(AMBIGUOUS_NAK)` produce anche, in qualsiasi fase, il warning `AMBIGUOUS_NAK` ("NAK ambiguo ignorato: nessun reinvio").
+- **Residuo dello splitter** (§3.7): `next()` trattiene il rumore in coda e i frame troncati, che quindi non diventano mai `Item`. La sessione chiama `splitter.clear()` alla fine di `run` su **ogni** via d'uscita (`Success`, ogni `Failure`, eccezioni comprese: in un `finally`, con codice non sospendente) e subito dopo lo splitter temporaneo del punto 1. Un residuo non vuoto ⇒ evento `Discarded(PanMasker.maskDigitRuns(residuo), NOISE)`. `NOISE` vale anche per un frame troncato, perché `DiscardReason` (WP0) non ha un motivo dedicato. Il residuo non riceve ACK, non è mai un esito e non passa a un altro splitter.
 - `sendControl(ctrl)`: `options.controlLrcTx.encode(ctrl, appMode)`, `transport.send`; `TransportException` ⇒ warning `CONTROL_SEND_FAILED` e si prosegue (**best effort**, M5). Evento `Wire` TX.
 - `lrcAccepted(frame, spec)`: `true` se `check.validInConfiguredMode`; altrimenti `true` con warning `APP_LRC_OTHER_MODE` se `check.validInSomeMode && options.appLrcRx == ACCEPT_ANY_MODE && !(spec.strictResultLrc && frame.replyCode in spec.expectedReplies)`; altrimenti `false` (il chiamante invia NAK con warning `APP_LRC_INVALID`, che per l'esito rigido dice "valido solo in <modalità>: rifiutato per un esito che decide un pagamento").
 - `transmitMain(reason)` con `reason ∈ {FIRST, NAK, ACK_TIMEOUT}`:
@@ -1890,7 +1896,7 @@ Contatori locali: `nakResends` (reinvii per NAK, limite `nakRetryCount`), `timeo
 
 **Algoritmo di `run`.**
 
-1. **Orfani prima dell'invio.** Se `spec.freshConnection` e `preSendQuietMs > 0`: attende `preSendQuietMs` raccogliendo byte. Poi `rx.takeAll()`: se non vuoto, li passa a uno splitter temporaneo ed emette eventi (`Discarded`/`Wire` RX) + warning `STALE_BYTES`; per ogni frame applicativo con codice in `E V e i c v` ⇒ warning `POSSIBLE_LOST_RESULT` ("possibile esito perso: usa G") con `payload` = payload mascherato. Gli orfani **non** ricevono ACK.
+1. **Orfani prima dell'invio.** Se `spec.freshConnection` e `preSendQuietMs > 0`: attende `preSendQuietMs` raccogliendo byte. Poi `rx.takeAll()`: se non vuoto, li passa a uno splitter temporaneo ed emette eventi (`Discarded`/`Wire` RX, poi il residuo del suo `clear()`, vedi le primitive) + warning `STALE_BYTES`; per ogni frame applicativo con codice in `E V e i c v` ⇒ warning `POSSIBLE_LOST_RESULT` ("possibile esito perso: usa G") con `payload` = payload mascherato. Gli orfani **non** ricevono ACK.
 2. **Invio**: `transmitMain(FIRST)`.
 3. **Handshake** (`AWAITING_ACK`, deadline = ora + `ackTimeoutMs`, riarmata **solo** a ogni invio):
    - `Control ACK` (match `WIRE`/`SAME_AS_APP` ⇒ `EXPLICIT`; `MISMATCH` ⇒ `EXPLICIT` + warning `CONTROL_LRC_MISMATCH`; `BARE` ⇒ `BARE` + warning `BARE_CONTROL`) ⇒ fase `ACKNOWLEDGED`; con `EXCHANGE` ⇒ punto 4; con `ACK_ONLY` ⇒ se `collectReceiptAfterAck` drain (punto 5), poi `Success(null, ackMode)`.
