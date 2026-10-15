@@ -290,7 +290,7 @@ internal object SimResponder {
         }
 
         val resultWait = if (fault == SimFault.DROP_AFTER_RESULT) null else resultWait(config, b)
-        val resultDescription = "Esito ${outcome.payload[9]} ${outcome.payload.substring(10, 12)} (${outcome.payload.length} B)"
+        val resultDescription = describeResult(code, outcome.payload)
         if (fault == SimFault.BARE_ACK) {
             // 06 seguito SUBITO dall'esito nello stesso segmento, dopo ackDelayMs e senza progress.
             b.bareAckWithResult(ackAt, outcome.payload, resultDescription, resultWait)
@@ -358,6 +358,17 @@ internal object SimResponder {
     }
 
     private fun frameWait(): AckWait = AckWait(waitMs = ECR_REPLY_WAIT_MS, validAck = null, maxResendsWithoutValidAck = 0)
+
+    /** Descrizione per il log: codice ed esito (pos 10-12), lunghezza; per `s` lo stato non ha un esito. */
+    private fun describeResult(code: Char, payload: String): String {
+        val reply = payload.getOrNull(9) ?: '?'
+        val result = payload.substring(10, minOf(12, payload.length))
+        return when (code) {
+            's' -> "Stato '$reply' (${payload.length} B)"
+            'G' -> "Ultimo esito '$reply' $result per G (${payload.length} B)"
+            else -> "Esito '$reply' $result (${payload.length} B)"
+        }
+    }
 
     /** Attesa dopo l'esito: con retransmitResultIfNoValidAck vale solo l'ACK di ackRule entro resultRetransmitDelayMs. */
     private fun resultWait(config: SimulatorConfig, b: PlanBuilder): AckWait =

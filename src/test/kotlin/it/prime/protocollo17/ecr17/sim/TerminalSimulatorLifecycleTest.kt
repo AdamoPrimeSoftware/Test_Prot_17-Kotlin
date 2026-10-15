@@ -180,6 +180,10 @@ class TerminalSimulatorLifecycleTest {
         const val TEST_TIMEOUT_MS = 15_000L
         const val AWAIT_MS = 3_000L
         const val POLL_MS = 10L
-        const val STOP_BUDGET_MS = 2_500L
+        /**
+         * Il tetto della join è 2 s: con l'ordine giusto la join è immediata, quindi uno stop vicino ai 2 s vuol dire
+         * che la join ha aspettato una read bloccante (ordine sbagliato). 1,5 s lascia margine al carico della macchina.
+         */
+        const val STOP_BUDGET_MS = 1_500L
     }
 }

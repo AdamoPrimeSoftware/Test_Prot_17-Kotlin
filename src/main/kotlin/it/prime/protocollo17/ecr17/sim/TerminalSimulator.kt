@@ -12,6 +12,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -110,7 +112,15 @@ class TerminalSimulator(
         check(!closed) { "Simulatore chiuso: crearne uno nuovo" }
         check(running == null) { "Simulatore già avviato sulla porta ${running?.port}" }
         val cfg = core.config.value
-        val server = withContext(Dispatchers.IO) { bind(cfg.bindHost, cfg.port) }
+        // NonCancellable: con withContext cancellabile un annullamento a bind riuscito scarterebbe il ServerSocket
+        // senza chiuderlo, e la porta resterebbe occupata fino alla fine del processo.
+        val server = withContext(NonCancellable + Dispatchers.IO) { bind(cfg.bindHost, cfg.port) }
+        try {
+            currentCoroutineContext().ensureActive()
+        } catch (e: CancellationException) {
+            closeQuietly(server)
+            throw e
+        }
         val port = server.localPort
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("p17-sim"))
         val run = Running(server, scope, port)
