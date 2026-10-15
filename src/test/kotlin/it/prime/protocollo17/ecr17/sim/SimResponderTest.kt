@@ -28,6 +28,7 @@ import it.prime.protocollo17.ecr17.model.StatusResponse
 import it.prime.protocollo17.ecr17.model.TerminalIds
 import it.prime.protocollo17.ecr17.model.TotalsRequest
 import it.prime.protocollo17.ecr17.model.TotalsResponse
+import it.prime.protocollo17.ecr17.model.TransactionResponse
 import it.prime.protocollo17.ecr17.model.Verdict
 import it.prime.protocollo17.ecr17.profile.ControlLrcRxPolicy
 import it.prime.protocollo17.ecr17.testing.Frames
@@ -285,6 +286,43 @@ class SimResponderTest {
         val r = assertInstanceOf(PaymentResponse::class.java, parse(empty, CommandCode.LAST_RESULT))
         assertEquals(Verdict.DECLINED, r.verdict)
         assertEquals("NESSUNA OPERAZIONE", r.errorDescription)
+    }
+
+    /**
+     * Matrice completa comando × decisione: lunghezza del layout, verdetto riletto dal parser, STAN solo per le
+     * transazioni avvenute e PAN mai in chiaro dopo il parser (il PAN del simulatore cade nelle posizioni che il
+     * PanMasker conosce, anche per la `i` rifiutata, che non ha un ramo KO).
+     */
+    @Test
+    fun `SR-33 ogni comando di transazione con ogni decisione ha il layout giusto`() {
+        val requests = listOf(
+            Triple(PaymentRequest(amountCents = 10), CommandCode.PAYMENT, 71),
+            Triple(PaymentRequest(amountCents = 10, extended = true), CommandCode.PAYMENT_EXTENDED, 92),
+            Triple(ReversalRequest(), CommandCode.REVERSAL, 84),
+            Triple(CardVerificationRequest(), CommandCode.CARD_VERIFICATION, 71),
+            Triple(PreAuthRequest(amountCents = 10), CommandCode.PRE_AUTH, 106),
+            Triple(IncrementalAuthRequest(amountCents = 10, originalPreAuthCode = "1"), CommandCode.INCREMENTAL_AUTH, 75),
+            Triple(PreAuthClosureRequest(amountCents = 10, originalPreAuthCode = "1"), CommandCode.PRE_AUTH_CLOSURE, 74),
+        )
+        val verdicts = mapOf(
+            SimDecision.APPROVE to Verdict.APPROVED,
+            SimDecision.DECLINE to Verdict.DECLINED,
+            SimDecision.CARD_NOT_PRESENT to Verdict.CARD_NOT_PRESENT,
+        )
+        for ((request, command, length) in requests) {
+            for ((decision, verdict) in verdicts) {
+                val case = "$command $decision"
+                val plan = respond(request, SimulatorConfig(decision = decision))
+                val payload = plan.result()
+                assertEquals(length, payload.length, "lunghezza: $case")
+                val r = assertInstanceOf(TransactionResponse::class.java, parse(payload, command), case)
+                assertEquals(verdict, r.verdict, "verdetto: $case")
+                val stan = if (decision == SimDecision.CARD_NOT_PRESENT) "000000" else "000001"
+                assertEquals(stan, r.stan, "STAN: $case")
+                assertFalse(r.raw.text.contains("4111111111111111"), "PAN in chiaro dopo il parser: $case")
+                assertEquals(payload, plan.memory.lastResultPayload, "esito ricordato per G: $case")
+            }
+        }
     }
 
     // ─── Richieste rifiutate ────────────────────────────────────────────────────
