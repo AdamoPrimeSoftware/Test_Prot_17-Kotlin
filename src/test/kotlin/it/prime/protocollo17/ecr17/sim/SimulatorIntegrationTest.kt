@@ -191,7 +191,9 @@ class SimulatorIntegrationTest {
         assertEquals(3, outcome.trace.timeoutRetransmissions)
         assertTrue(WarningCode.POSSIBLE_DUPLICATE in outcome.trace.codes, "warning: ${outcome.trace.codes}")
         assertTrue(outcome.needsReview, "esito da verificare: pagamenti bloccati")
-        assertEquals(4, sim.snapshot().received('P'), "simulatore: 4 P ricevuti")
+        val state = awaitSim(sim, "ACK dell'ECR all'esito") { it.controlFramesReceived.isNotEmpty() }
+        assertEquals(4, state.received('P'), "simulatore: 4 P ricevuti")
+        assertEquals(1, state.stan, "una sola transazione: le ritrasmissioni sono contate, non rielaborate")
     }
 
     @Test
