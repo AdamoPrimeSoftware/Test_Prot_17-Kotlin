@@ -122,7 +122,8 @@ Protocollo17ComposeDesktop/
 ├── docs/ ANALISI_REPOSITORY.md, ANALISI_LARAVEL_ECR17.md, DESIGN.md
 └── src/
     ├── main/kotlin/it/prime/protocollo17/      (§2.8)
-    ├── main/resources/logback.xml
+    ├── main/resources/logback.xml, app-version.properties (§2.5)
+    ├── main/packaging/icon.ico                 (icona dell'installer, §2.5)
     └── test/kotlin/it/prime/protocollo17/      (§2.9)
 ```
 
@@ -301,11 +302,16 @@ compose.desktop {
             windows {
                 menuGroup = "Protocollo17"
                 upgradeUuid = "0e99d6a1-1ceb-4d07-8b01-6d9f27d4a11b"   // fisso per sempre
+                // Prima l'installer usava l'icona di default di Compose. Stesso disegno di rememberAppIcon() (§6.1),
+                // renderizzato una volta a 16/32/48/256 px: se cambia AppIcon.kt va rigenerato.
+                iconFile.set(project.file("src/main/packaging/icon.ico"))
             }
         }
     }
 }
 ```
+
+`src/main/packaging/icon.ico` (committato) è l'icona di MSI, EXE, collegamenti e *Impostazioni > App*: lo stesso disegno di `rememberAppIcon()` (§6.1) renderizzato con `ImageComposeScene` a 16, 32 e 48 px (BMP 32 bit con alfa) e a 256 px (PNG). È stato generato una volta sola da un test temporaneo non committato; se cambia `AppIcon.kt` va rigenerato allo stesso modo.
 
 Comandi (riportati in `CLAUDE.md`): `.\gradlew.bat compileKotlin`, `.\gradlew.bat test`, `.\gradlew.bat run`, `.\gradlew.bat packageDistributionForCurrentOS` (MSI ed EXE in `build/compose/binaries/main/{msi,exe}`), `.\gradlew.bat suggestModules`. Per i test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input del task).
 
@@ -3161,7 +3167,7 @@ Ogni finestra è un vero `Window` dichiarato nello scope `application {}` (mai a
 - **Geometria persistita in continuo**: `rememberPersistedWindowState` osserva `snapshotFlow { state.size to state.position to state.placement }.debounce(500)` e chiama `AppWindows.saveGeometry`. Così la geometria delle secondarie è salvata anche quando la chiusura della principale le distrugge senza passare dal loro `onCloseRequest`; il `onCloseRequest` della principale fa comunque un ultimo salvataggio della propria.
 - Le finestre secondarie aperte alla chiusura vengono riaperte all'avvio (`ui.openWindows`).
 - Lo stato condiviso (traffico, journal, collegamento, comando in corso, cronologia) vive in singleton (`TrafficRepository`, `JournalRepository`, `CommandRunner`, `SimulatorController`); i ViewModel delle finestre lo osservano soltanto.
-- **Icona** di tutte le finestre: `rememberAppIcon()` (`presentation/util/AppIcon.kt`), un `Painter` che disegna un quadrato arrotondato `Indigo600` con il glifo `Icons.Filled.PointOfSale` in bianco (`VectorPainter` disegnato con `ColorFilter.tint(Color.White)`). Il glifo nudo, con la tinta non specificata, risulterebbe nero e quasi invisibile sulla barra del titolo e sulla taskbar scure. Nessun PNG da produrre in v1.
+- **Icona** di tutte le finestre: `rememberAppIcon()` (`presentation/util/AppIcon.kt`), un `Painter` che disegna un quadrato arrotondato `Indigo600` con il glifo `Icons.Filled.PointOfSale` in bianco (`VectorPainter` disegnato con `ColorFilter.tint(Color.White)`). Il glifo nudo, con la tinta non specificata, risulterebbe nero e quasi invisibile sulla barra del titolo e sulla taskbar scure. A runtime nessun PNG: le finestre disegnano il `Painter`. L'installer usa invece `src/main/packaging/icon.ico`, lo stesso disegno renderizzato una volta (§2.5).
 
 ### 6.2 Finestra principale: layout
 
@@ -4622,7 +4628,7 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
 5. Primo pacchetto: `.\gradlew.bat suggestModules`, aggiornamento di `modules(...)`, `packageDistributionForCurrentOS`, prova dell'MSI installato.
    Stato al 2026-10-16: `suggestModules` ⇒ `modules("java.instrument", "jdk.unsupported")` (`java.management` non serviva); il pacchetto produce `build/compose/binaries/main/msi/Protocollo17ComposeDesktop-1.0.0.msi` ed `exe/Protocollo17ComposeDesktop-1.0.0.exe` (circa 99 MB, runtime jlink da JDK 21). La versione mostrata dall'app deriva da `version` (§2.5). Prova manuale dell'MSI, a carico dell'utente:
    1. chiudere l'app se aperta; eseguire l'MSI: installazione per macchina (chiede l'elevazione), cartella proposta nel dialog (`C:\Program Files\Protocollo17ComposeDesktop`);
-   2. avviare da *Start > Protocollo17*; *Aiuto > Informazioni* mostra la versione `1.0.0` e la cartella dati;
+   2. avviare da *Start > Protocollo17*: il collegamento, l'installer e *Impostazioni > App* mostrano l'icona dell'app (glifo bianco su Indigo, §2.5), non quella di default di Compose; *Aiuto > Informazioni* mostra la versione `1.0.0` e la cartella dati;
    3. in `~/.protocollo17/logs/app.log` il banner di avvio e nessun `NoClassDefFoundError`/`ClassNotFoundException` (un modulo JDK mancante si vede qui);
    4. *Strumenti > Avvia simulatore*, *Usa simulatore come terminale*, poi `s` e un `P`: esiti, log traffico e journal scritti;
    5. chiudere e riaprire (impostazioni e journal conservati); disinstallare da *Impostazioni > App*: `~/.protocollo17` resta;

@@ -82,6 +82,9 @@ compose.desktop {
             windows {
                 menuGroup = "Protocollo17"
                 upgradeUuid = "0e99d6a1-1ceb-4d07-8b01-6d9f27d4a11b"   // fisso per sempre
+                // Prima l'installer usava l'icona di default di Compose. Stesso disegno di rememberAppIcon() (§6.1),
+                // renderizzato una volta a 16/32/48/256 px: se cambia AppIcon.kt va rigenerato.
+                iconFile.set(project.file("src/main/packaging/icon.ico"))
             }
         }
     }
