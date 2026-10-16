@@ -317,9 +317,9 @@ object ResponseParser {
      * la coda 7D×6 + 1B segna la fine dello scontrino ed è rimossa dal testo.
      *
      * maskPan = true: PanMasker.maskDigitRuns su raw e text (alcuni terminali stampano il PAN in chiaro). Il testo
-     * si maschera DOPO la conversione: un PAN spezzato da un 0x7F diventa una sola sequenza di cifre solo lì. Il
-     * grezzo si maschera con lo 0x7F trasparente ([maskRawReceipt]): prima `maskDigitRuns(raw)` vedeva due sequenze
-     * da 8 cifre sotto la soglia di 13 e lasciava in chiaro in `raw` il PAN che `text` mascherava (M9).
+     * si maschera DOPO la conversione, il grezzo così com'è: maskDigitRuns tratta lo 0x7F come trasparente, quindi un
+     * PAN spezzato dalla doppia altezza è mascherato in entrambi, con lo 0x7F al suo posto nel grezzo (M9). Prima il
+     * grezzo passava da una proiezione locale (maskRawReceipt), ora la regola è una sola, in PanMasker.
      */
     fun parseReceiptLine(payload: ByteArray, maskPan: Boolean = true): ReceiptLine {
         val raw = FieldReader(payload).restFrom(11)
@@ -336,7 +336,7 @@ object ResponseParser {
             }
         }
         return ReceiptLine(
-            raw = if (maskPan) maskRawReceipt(raw = raw, transparent = doubleChar) else raw,
+            raw = if (maskPan) PanMasker.maskDigitRuns(raw) else raw,
             text = if (maskPan) PanMasker.maskDigitRuns(text) else text,
             doubleHeight = body.indexOf(doubleChar) >= 0,
             isEnd = isEnd,
@@ -366,25 +366,6 @@ object ResponseParser {
             if (maskedField.length == count) maskedField.toByteArray(Charsets.ISO_8859_1).copyInto(masked, from)
         }
         return masked
-    }
-
-    /**
-     * maskDigitRuns sul grezzo di una riga 'S' con [transparent] (0x7F) ignorato: il terminale può inserire il
-     * byte di doppia altezza in mezzo al PAN, e sul grezzo le due metà resterebbero sotto la soglia di 13 cifre.
-     * Si maschera la proiezione senza 0x7F (maskDigitRuns conserva la lunghezza) e si rimettono gli 0x7F al loro
-     * posto, così il grezzo resta fedele al filo tranne le cifre mascherate.
-     *
-     * Se la lunghezza non tornasse (contratto di PanMasker violato) si restituisce la proiezione mascherata: meglio
-     * perdere gli 0x7F nel grezzo che un PAN in chiaro (M9).
-     */
-    private fun maskRawReceipt(raw: String, transparent: Char): String {
-        val projected = raw.filter { it != transparent }
-        val masked = PanMasker.maskDigitRuns(projected)
-        if (masked.length != projected.length) return masked
-        var next = 0
-        return buildString(raw.length) {
-            for (c in raw) append(if (c == transparent) c else masked[next++])
-        }
     }
 
     /** Numero solo se il campo è COMPLETO e di sole cifre (A§8 D10): un importo troncato o "00000650AB" è null. */

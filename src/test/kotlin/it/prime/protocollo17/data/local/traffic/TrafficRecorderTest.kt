@@ -217,6 +217,9 @@ class TrafficRecorderTest {
         rec.onEvent(ProtocolEvent.Wire(++seq, noon, 1, FrameDirection.RX, FrameKind.APPLICATION, 'E', PanMasker.maskFrame(clearFrame), null, "LRC ok"))
         val fragment = Frames.E22_CLEAR.substring(5, 40).toByteArray(Charsets.ISO_8859_1)
         rec.onEvent(ProtocolEvent.Discarded(++seq, noon, 1, PanMasker.maskDigitRuns(fragment), DiscardReason.NOISE))
+        // Frammento di riga S con il PAN spezzato dalla doppia altezza (0x7F): mascherato anche così.
+        val splitFragment = "SPAN 41111111\u007F11111111".toByteArray(Charsets.ISO_8859_1)
+        rec.onEvent(ProtocolEvent.Discarded(++seq, noon, 1, PanMasker.maskDigitRuns(splitFragment), DiscardReason.RESYNC_ON_NEW_START))
         val receiptPayload = Frames.RECEIPT_PAN.toByteArray(Charsets.ISO_8859_1)
         rec.onEvent(ProtocolEvent.Receipt(++seq, noon, 1, ResponseParser.parseReceiptLine(receiptPayload, maskPan = true)))
         rec.close()
@@ -225,5 +228,7 @@ class TrafficRecorderTest {
         assertFalse(text.contains("4111111111111111"), "PAN in chiaro nel file:\n$text")
         val clearHex = "4111111111111111".toByteArray().joinToString(" ") { "%02x".format(it) }
         assertFalse(text.contains(clearHex), "PAN in chiaro come hex nel file")
+        val halfHex = "41111111".toByteArray().joinToString(" ") { "%02x".format(it) }
+        assertFalse(text.contains(halfHex), "metà del PAN spezzato da 0x7F in chiaro come hex nel file:\n$text")
     }
 }

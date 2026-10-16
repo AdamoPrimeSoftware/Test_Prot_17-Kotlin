@@ -140,7 +140,7 @@ class PanMaskerTest {
      * Lo 0x7F (doppia altezza) in mezzo al PAN di una riga S è trasparente. Prima `41111111<7F>11111111` contava come
      * due sequenze da 8 cifre, sotto la soglia di 13, e il PAN restava in chiaro nel log traffico e nel log del
      * simulatore mentre il testo della riga lo mascherava (M9). Lo 0x7F resta al suo posto e il grezzo coincide con
-     * quello del parser (`ResponseParser.maskRawReceipt`).
+     * quello del parser (`ReceiptLine.raw`).
      */
     @Test
     fun `riga S con PAN spezzato da 0x7F`() {
@@ -310,6 +310,33 @@ class PanMaskerTest {
             PanMasker.maskDigitRuns("CARTA 4111111111111111 E 5500000000000004"),
         )
         assertEquals("", PanMasker.maskDigitRuns(""))
+    }
+
+    /**
+     * Frammento scartato di una riga S con il PAN spezzato da 0x7F (ProtocolEvent.Discarded, residuo dello splitter,
+     * log del simulatore). Prima solo il ramo S di maskApplicationPayload saltava lo 0x7F: qui maskDigitRuns contava
+     * due sequenze da 8 cifre, sotto la soglia, e il PAN restava in chiaro nel log traffico (M9).
+     */
+    @Test
+    fun `maskDigitRuns con PAN spezzato da 0x7F`() {
+        val fragment = "SPAN 41111111\u007F11111111}"
+        val expected = "SPAN ********\u007F****1111}"
+        assertEquals(expected, text(PanMasker.maskDigitRuns(ascii(fragment))), "byte")
+        assertEquals(expected, PanMasker.maskDigitRuns(fragment), "stringa: stesso risultato")
+
+        // Sotto la soglia anche contando attraverso lo 0x7F, e 0x7F fuori dalle cifre: invariati.
+        assertEquals("12345\u007F6789 \u007FA", PanMasker.maskDigitRuns("12345\u007F6789 \u007FA"))
+        assertEquals("\u007F\u007F", text(PanMasker.maskDigitRuns(ascii("\u007F\u007F"))))
+    }
+
+    /** Un frame senza STX e i byte oltre l'LRC passano dalla stessa rete di sicurezza, con lo 0x7F trasparente. */
+    @Test
+    fun `maskFrame senza STX e coda con PAN spezzato da 0x7F`() {
+        val noStx = ascii("80SPAN 41111111\u007F11111111\u0003")
+        assertEquals("80SPAN ********\u007F****1111\u0003", text(PanMasker.maskFrame(noStx)))
+
+        val withTail = Frames.app(Frames.E4) + ascii("41111111\u007F11111111")
+        assertEquals(text(Frames.app(Frames.E4)) + "********\u007F****1111", text(PanMasker.maskFrame(withTail)))
     }
 
     /** Overload su byte e su stringa danno lo stesso risultato, e la versione su byte restituisce una copia. */
