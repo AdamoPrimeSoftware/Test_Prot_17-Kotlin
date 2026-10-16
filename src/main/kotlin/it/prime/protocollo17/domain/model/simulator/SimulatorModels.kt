@@ -10,12 +10,15 @@ data class SimLogEntry(val id: Long, val at: Long, val direction: String, val te
 data class SimStats(val connections: Int = 0, val requests: Int = 0, val rejectedForLrc: Int = 0, val lastCommand: Char? = null, val posTotalCents: Long = 0)
 
 /**
- * Perché il simulatore non è partito. È uno stato visibile all'utente e non un'eccezione: una porta occupata
- * è un caso normale (un'altra istanza, un altro programma) e va spiegata accanto al campo porta.
+ * Perché il simulatore non è partito o non è più in ascolto. È uno stato visibile all'utente e non un'eccezione:
+ * una porta occupata è un caso normale (un'altra istanza, un altro programma) e va spiegata accanto al campo porta.
  */
 sealed interface SimulatorFailure {
     data class PortInUse(val port: Int) : SimulatorFailure
     data class Unexpected(val message: String) : SimulatorFailure
+
+    /** L'ascolto è morto da solo dopo un avvio riuscito: le connessioni dell'ECR sono rifiutate finché non si riavvia. */
+    data class ListenerDied(val port: Int) : SimulatorFailure
 }
 
 /** Ciclo di vita del simulatore come lo vede l'utente. */

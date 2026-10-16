@@ -157,17 +157,24 @@ class Ecr17Client(
             run.outcome = outcome
             return outcome
         } finally {
-            withContext(NonCancellable) {
-                try {
-                    applyClosePolicy(run)
-                } catch (e: Exception) {
-                    // La chiusura è best effort: lock e stato busy vanno rilasciati comunque.
+            // La chiusura è best effort; lock e stato busy si rilasciano comunque. Una CancellationException dalla
+            // chiusura non si inghiotte (§2.12): per questo il rilascio sta in un finally a parte, che la lascia passare.
+            try {
+                withContext(NonCancellable) {
+                    try {
+                        applyClosePolicy(run)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Errore di chiusura: il socket è già perso, l'esito resta quello calcolato.
+                    }
                 }
+            } finally {
+                emitFinished(run)
+                mutableBusy.value = null
+                current = null
+                mutex.unlock()
             }
-            emitFinished(run)
-            mutableBusy.value = null
-            current = null
-            mutex.unlock()
         }
     }
 

@@ -6,6 +6,9 @@ package it.prime.protocollo17.ecr17.wire
  * Dove si applica: `ProtocolEvent.Wire` RX ⇒ [maskFrame]; `ProtocolEvent.Discarded` ⇒ [maskDigitRuns];
  * righe S con `maskPan = true` ⇒ [maskDigitRuns] su raw e text; `SimEvent.FrameOut` ⇒ [maskFrame].
  *
+ * In tutta la rete di sicurezza lo 0x7F (doppia altezza delle righe S) è trasparente: il terminale può inserirlo in
+ * mezzo al PAN, e `41111111<7F>11111111` non deve contare come due sequenze da 8 cifre, sotto la soglia.
+ *
  * Perché due strategie: sugli esiti la posizione del PAN è nota (pos 13, len 19) e mascherare solo lì lascia
  * leggibili acquirer, STAN e online id, che sono proprio le sequenze di cifre lunghe da confrontare con lo
  * scontrino. Dove la posizione non è nota (righe di scontrino, frammenti scartati, codici inattesi) si usa la
@@ -68,7 +71,8 @@ object PanMasker {
      * Copia del payload applicativo mascherato secondo il codice in pos 10:
      * - 'i': PAN (pos 13 len 19) SEMPRE mascherato (la risposta 75 B non ha ramo KO, A§4.5.4);
      * - E, V, e, c, v: PAN (pos 13 len 19) mascherato se l'esito (pos 11-12) è diverso da "01";
-     * - 'S' (riga di scontrino) e codici fuori dalle risposte v1 (U, K, altro): maskDigitRuns dalla pos 11;
+     * - 'S' (riga di scontrino) e codici fuori dalle risposte v1 (U, K, altro): maskDigitRuns dalla pos 11 (con lo
+     *   0x7F trasparente);
      * - s, T, C: copia identica (nessun PAN; contengono lunghe sequenze di cifre che NON vanno toccate).
      *
      * Un payload troncato maschera la parte del campo PAN che c'è; un esito mancante (payload < 12 byte) conta
@@ -87,7 +91,8 @@ object PanMasker {
             code == 'i' -> maskPanField(out)
             code in PAN_IF_NOT_KO -> if (!isKo(out)) maskPanField(out)
             code in NO_PAN -> Unit
-            else -> maskDigitRunsInPlace(out, from = 0)   // 'S', U, K, codici sconosciuti o numerici, payload corti
+            // 'S', U, K, codici sconosciuti o numerici, payload corti
+            else -> maskDigitRunsInPlace(out, from = 0)
         }
         return out
     }
@@ -119,6 +124,10 @@ object PanMasker {
      * Rete di sicurezza senza posizioni: ogni sequenza di ≥ 13 cifre ASCII consecutive diventa '*' tranne le
      * ultime 4. Per byte scartati (ProtocolEvent.Discarded), testo delle righe S, byte non applicativi del
      * log del simulatore. Può mascherare anche STAN/online in un frammento scartato: accettato.
+     *
+     * Lo 0x7F è trasparente: le sequenze si contano come se non ci fosse e resta al suo posto. Prima solo il ramo S
+     * di [maskApplicationPayload] lo saltava, e un frammento scartato di una riga S con `41111111<7F>11111111`
+     * finiva in chiaro nel log traffico e nel log del simulatore (M9). I due overload danno lo stesso risultato.
      */
     fun maskDigitRuns(bytes: ByteArray): ByteArray {
         val out = bytes.copyOf()
@@ -128,9 +137,13 @@ object PanMasker {
 
     fun maskDigitRuns(text: String): String {
         val chars = text.toCharArray()
-        forEachDigitRun(size = chars.size, from = 0, isDigit = { chars[it].isAsciiDigit() }) { runStart, runEnd ->
-            for (i in runStart until runEnd - VISIBLE_DIGITS) chars[i] = MASK
-        }
+        maskRunsSkippingDouble(
+            size = chars.size,
+            from = 0,
+            isDouble = { chars[it].code == ControlChars.RECEIPT_DOUBLE },
+            isDigit = { chars[it].isAsciiDigit() },
+            mask = { chars[it] = MASK },
+        )
         return String(chars)
     }
 
@@ -160,8 +173,32 @@ object PanMasker {
     }
 
     private fun maskDigitRunsInPlace(bytes: ByteArray, from: Int) {
-        forEachDigitRun(size = bytes.size, from = from, isDigit = { isAsciiDigit(bytes[it]) }) { runStart, runEnd ->
-            for (i in runStart until runEnd - VISIBLE_DIGITS) bytes[i] = MASK_BYTE
+        maskRunsSkippingDouble(
+            size = bytes.size,
+            from = from,
+            isDouble = { (bytes[it].toInt() and 0xFF) == ControlChars.RECEIPT_DOUBLE },
+            isDigit = { isAsciiDigit(bytes[it]) },
+            mask = { bytes[it] = MASK_BYTE },
+        )
+    }
+
+    /**
+     * Sequenze di ≥ [MIN_PAN_RUN] cifre da [from] in poi, con lo 0x7F ([isDouble]) trasparente: si contano sulla
+     * proiezione senza 0x7F (indici in `kept`) e le cifre mascherate restano al loro posto. Lunghezza e posizione
+     * degli 0x7F restano quelle del filo.
+     */
+    private inline fun maskRunsSkippingDouble(
+        size: Int,
+        from: Int,
+        isDouble: (Int) -> Boolean,
+        isDigit: (Int) -> Boolean,
+        mask: (Int) -> Unit,
+    ) {
+        val kept = IntArray((size - from).coerceAtLeast(0))
+        var count = 0
+        for (i in from until size) if (!isDouble(i)) kept[count++] = i
+        forEachDigitRun(size = count, from = 0, isDigit = { isDigit(kept[it]) }) { runStart, runEnd ->
+            for (k in runStart until runEnd - VISIBLE_DIGITS) mask(kept[k])
         }
     }
 

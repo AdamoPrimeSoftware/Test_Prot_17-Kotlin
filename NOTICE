@@ -1,6 +1,5 @@
 Protocollo17ComposeDesktop
 Copyright (c) 2026 Prime Software
-Questo progetto è distribuito con licenza Apache-2.0 (vedi LICENSE).
 
 Reimplementazione indipendente in Kotlin del protocollo ECR17 ("Protocollo 17").
 Il comportamento del protocollo è stato studiato, senza copiarne il codice, nei progetti di padosoft:

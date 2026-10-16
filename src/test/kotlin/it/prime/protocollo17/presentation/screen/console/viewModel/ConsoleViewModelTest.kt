@@ -29,7 +29,6 @@ import it.prime.protocollo17.ecr17.profile.TerminalProfileId
 import it.prime.protocollo17.ecr17.profile.TerminalProfiles
 import it.prime.protocollo17.presentation.FakeCommandRunner
 import it.prime.protocollo17.presentation.FakeSettings
-import it.prime.protocollo17.presentation.StubFallbacks
 import it.prime.protocollo17.presentation.UiFixtures
 import it.prime.protocollo17.presentation.popStandaloneScreenModels
 import it.prime.protocollo17.presentation.state.RunnerState
@@ -61,7 +60,7 @@ import org.junit.jupiter.api.Test
 /**
  * Console (§6.5, §7.8): blocco dei pagamenti, conferme, annullamento e G sono le difese che l'operatore vede.
  * Il runner è un fake con gate (un comando resta in corso finché il test non lo conclude), gli altri
- * collaboratori sono mock; gli stub degli altri WP passano da StubFallbacks.
+ * collaboratori sono mock.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConsoleViewModelTest {
@@ -86,7 +85,6 @@ class ConsoleViewModelTest {
     @BeforeEach
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        StubFallbacks.install()
         runner = FakeCommandRunner()
         settings = FakeSettings()
         pos = mockk(relaxed = true) {
@@ -108,7 +106,6 @@ class ConsoleViewModelTest {
     @AfterEach
     fun tearDown() {
         popStandaloneScreenModels()
-        StubFallbacks.uninstall()
         Dispatchers.resetMain()
     }
 
@@ -520,6 +517,83 @@ class ConsoleViewModelTest {
             assertEquals(ConsoleEvent.ShowSuccess("Connessione riuscita in 14 ms"), awaitItem())
         }
         assertFalse(vm.uiState.value.connection.testing)
+    }
+
+    /**
+     * Il test connessione tiene il lock del client: prima i comandi restavano attivi e un pagamento lanciato in quel
+     * momento scriveva il tentativo nel journal e finiva NotSent(Busy). Ora sono disabilitati e non partono.
+     */
+    @Test
+    fun `durante Test connessione i comandi sono disabilitati e non partono`() {
+        val gate = CompletableDeferred<ConnectionTestResult>()
+        coEvery { pos.testConnection() } coAnswers { gate.await() }
+        val vm = vm()
+        vm.onAction(ConsoleAction.UpdateField(CommandCode.PAYMENT, FieldKey.AMOUNT, "0,10"))
+        assertTrue(vm.uiState.value.canRunSelected, "prima del test")
+
+        vm.onAction(ConsoleAction.TestConnection)
+        val during = vm.uiState.value
+        assertTrue(during.connection.testing)
+        assertTrue(during.linkBusy)
+        assertFalse(during.canRunSelected, "P disabilitato durante il test")
+        assertFalse(during.barActionsEnabled, "Stato e Connetti disabilitati durante il test")
+        vm.onAction(ConsoleAction.RunSelected)
+        vm.onAction(ConsoleAction.PingStatus)
+        vm.onAction(ConsoleAction.TestConnection)
+        assertTrue(runner.runs.isEmpty(), "nessun comando durante il test: finirebbe NotSent(Busy) dopo il journal")
+        coVerify(exactly = 1) { pos.testConnection() }
+
+        gate.complete(ConnectionTestResult(UiFixtures.ENDPOINT, ok = true, millis = 14, failure = null))
+        assertFalse(vm.uiState.value.linkBusy)
+        assertTrue(vm.uiState.value.canRunSelected, "di nuovo attivo a test concluso")
+        vm.onAction(ConsoleAction.RunSelected)
+        assertEquals(PaymentRequest(amountCents = 10), runner.runs.single().first)
+    }
+
+    /** Lo stesso durante Connetti/Disconnetti (PERSISTENT): anche G e Stato, che il journal non blocca mai. */
+    @Test
+    fun `durante Connetti G e i comandi sono disabilitati`() {
+        val gate = CompletableDeferred<Ecr17Failure?>()
+        coEvery { pos.connect() } coAnswers { gate.await() }
+        unresolvedFlow.value = listOf(UiFixtures.entry(attemptId = "attempt-1", command = CommandCode.PAYMENT))
+        val vm = vm()
+        assertTrue(vm.uiState.value.canRecoverWithG, "prima di Connetti")
+
+        vm.onAction(ConsoleAction.Connect)
+        assertTrue(vm.uiState.value.connection.switching)
+        assertFalse(vm.uiState.value.canRecoverWithG, "G disabilitato durante Connetti")
+        vm.onAction(ConsoleAction.RecoverWithG)
+        vm.onAction(ConsoleAction.Select(CommandCode.STATUS))
+        assertFalse(vm.uiState.value.canRunSelected, "s disabilitato durante Connetti")
+        vm.onAction(ConsoleAction.RunSelected)
+        vm.onAction(ConsoleAction.Disconnect)
+        vm.onAction(ConsoleAction.TestConnection)
+        assertTrue(runner.runs.isEmpty(), "nessun comando durante Connetti")
+        coVerify(exactly = 0) { pos.disconnect() }
+        coVerify(exactly = 0) { pos.testConnection() }
+
+        gate.complete(null)
+        assertFalse(vm.uiState.value.connection.switching)
+        assertTrue(vm.uiState.value.canRecoverWithG, "G di nuovo attivo")
+        assertTrue(vm.uiState.value.canRunSelected, "s di nuovo attivo")
+    }
+
+    /** Un ConfirmRun arrivato durante il test (dialog aperto prima) non parte: avviso invece di NotSent(Busy). */
+    @Test
+    fun `ConfirmRun durante Test connessione non esegue`() = runTest {
+        val gate = CompletableDeferred<ConnectionTestResult>()
+        coEvery { pos.testConnection() } coAnswers { gate.await() }
+        val vm = vm()
+        vm.onAction(ConsoleAction.Select(CommandCode.CLOSE_SESSION))
+        vm.onAction(ConsoleAction.RunSelected)
+        assertTrue(vm.uiState.value.dialog is ConsoleDialog.ConfirmRun)
+        vm.onAction(ConsoleAction.TestConnection)
+        vm.events.test {
+            vm.onAction(ConsoleAction.ConfirmRun)
+            assertEquals(ConsoleEvent.ShowError("Operazione di collegamento in corso: attendi che finisca"), awaitItem())
+        }
+        assertTrue(runner.runs.isEmpty(), "la chiusura contabile non parte durante il test")
+        gate.complete(ConnectionTestResult(UiFixtures.ENDPOINT, ok = true, millis = 14, failure = null))
     }
 
     /** Le azioni del menu Strumenti arrivano come ConsoleAction e chiamano il controller. */

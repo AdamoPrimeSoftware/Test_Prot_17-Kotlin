@@ -29,6 +29,8 @@ import it.prime.protocollo17.presentation.theme.PreviewTheme
  *
  * Il glifo nudo, senza tinta, viene disegnato nero: quasi invisibile sulla barra del titolo e sulla taskbar scure
  * (R38). Disegnarlo bianco su un fondo pieno lo rende leggibile su qualsiasi tema, senza un PNG da produrre in v1.
+ * L'installer usa `src/main/packaging/icon.ico`, lo stesso disegno renderizzato una volta (§2.5): se cambia qui, va
+ * rigenerato.
  */
 @Composable
 fun rememberAppIcon(): Painter {

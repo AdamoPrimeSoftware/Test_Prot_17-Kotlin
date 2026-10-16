@@ -69,25 +69,25 @@ class JournalRepositoryImpl(
 
     /**
      * Restituisce i tentativi CHIUSI da questo recupero (UNKNOWN o NOT_SENT), più recenti prima: sono quelli
-     * rimasti a metà all'ultima chiusura dell'app, per l'avviso all'avvio (§6.18). Non lancia mai: un errore
-     * di lettura lascia un'entry sintetica bloccante, uno di scrittura lascia l'entry forzata a UNKNOWN.
+     * rimasti a metà all'ultima chiusura dell'app, per l'avviso all'avvio (§6.18).
+     *
+     * Journal illeggibile (errore di I/O: file bloccato da antivirus o OneDrive, permessi, disco) ⇒ rilancia
+     * l'eccezione senza pubblicare nulla, e l'app non parte (Main.recoverJournalOrExit, M6). Prima si creava
+     * un'entry sintetica bloccante e l'app partiva senza i tentativi veri: bastava chiudere quell'entry con una nota
+     * per sbloccare i pagamenti senza aver mai visto quelli rimasti senza esito. Un file mancante resta un journal
+     * vuoto; le righe corrotte si saltano e si conservano in `.corrupt-*` (JournalStore). Un errore di scrittura
+     * delle chiusure non lancia: lascia l'entry forzata a UNKNOWN.
      */
     override suspend fun recoverOnStartup(): List<JournalEntry> = withContext(NonCancellable) {
         mutex.withLock {
             attempts.clear()
             val records = try {
                 store.readAll()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                log.error("Journal illeggibile ({}): comandi journaled bloccati finché non lo risolvi", e.message, e)
-                // Nel dubbio si blocca (M6): senza il file non si può sapere se un pagamento è rimasto a metà.
-                val id = "journal-illeggibile-${wallClock()}"
-                val record = JournalRecord(
-                    attemptId = id, seq = 0, at = wallClock(), phase = JournalPhase.UNKNOWN,
-                    failure = "journal illeggibile all'avvio: ${e.message}",
-                )
-                attempts[id] = Attempt(mutableListOf(record), nextSeq = 1, persisted = false)
-                publishLocked()
-                return@withLock listOf(foldLocked(id))
+                log.error("Journal illeggibile all'avvio ({}): l'app non parte", e.message)
+                throw e
             }
             for (record in records) {
                 val attempt = attempts.getOrPut(record.attemptId) { Attempt(mutableListOf(), 0) }

@@ -7,7 +7,6 @@ import it.prime.protocollo17.ecr17.profile.TerminalProfileId
 import it.prime.protocollo17.ecr17.profile.TerminalProfiles
 import it.prime.protocollo17.presentation.FakeCommandRunner
 import it.prime.protocollo17.presentation.FakeSettings
-import it.prime.protocollo17.presentation.StubFallbacks
 import it.prime.protocollo17.presentation.popStandaloneScreenModels
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -19,16 +18,15 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
 
 /**
- * Opzioni (§6.11, R31). Gira dopo il merge di WP5 (ConfigResolver): i range dell'operatore e la configurazione
- * effettiva sono suoi. Un testo sbagliato resta visibile con il suo errore e non viene mai salvato: un timeout
- * ACK "abc" o 40 ms finito nel file cambierebbe il comportamento sul terminale senza che l'operatore lo sappia.
+ * Opzioni (§6.11, R31). I range dell'operatore e la configurazione effettiva vengono da ConfigResolver. Un testo
+ * sbagliato resta visibile con il suo errore e non viene mai salvato: un timeout ACK "abc" o 40 ms finito nel file
+ * cambierebbe il comportamento sul terminale senza che l'operatore lo sappia.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class OptionsViewModelTest {
@@ -41,27 +39,13 @@ class OptionsViewModelTest {
 
     @BeforeEach
     fun setUp() {
-        // Prima del merge di WP5 ConfigResolver è uno stub: il collect delle impostazioni nel ViewModel morirebbe con
-        // NotImplementedError fuori da runTest, e kotlinx-coroutines-test la riconsegnerebbe al primo runTest di
-        // un'ALTRA classe, facendolo fallire senza colpa. Meglio saltare in modo esplicito: dopo il merge girano.
-        assumeTrue(configResolverReady(), "ConfigResolver (WP5) ancora stub: OptionsViewModelTest gira dopo il merge")
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        StubFallbacks.install()
         settings = FakeSettings()
-    }
-
-    private fun configResolverReady(): Boolean = try {
-        ConfigResolver.profileDefaults(TerminalProfiles.INGENICO)
-        true
-    } catch (e: NotImplementedError) {
-        false
     }
 
     @AfterEach
     fun tearDown() {
-        if (!::settings.isInitialized) return     // test saltato dall'assunzione
         popStandaloneScreenModels()
-        StubFallbacks.uninstall()
         Dispatchers.resetMain()
     }
 

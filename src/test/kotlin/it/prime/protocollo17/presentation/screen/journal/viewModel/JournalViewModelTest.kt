@@ -7,7 +7,6 @@ import it.prime.protocollo17.domain.repository.JournalRepository
 import it.prime.protocollo17.ecr17.model.CommandCode
 import it.prime.protocollo17.ecr17.model.LastResultRequest
 import it.prime.protocollo17.presentation.FakeCommandRunner
-import it.prime.protocollo17.presentation.StubFallbacks
 import it.prime.protocollo17.presentation.UiFixtures
 import it.prime.protocollo17.presentation.popStandaloneScreenModels
 import it.prime.protocollo17.presentation.state.RunOrigin
@@ -56,7 +55,6 @@ class JournalViewModelTest {
     @BeforeEach
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        StubFallbacks.install()
         journal = mockk(relaxed = true) {
             every { this@mockk.entries } returns this@JournalViewModelTest.entries
             every { unresolved } returns unresolvedFlow
@@ -72,7 +70,6 @@ class JournalViewModelTest {
     @AfterEach
     fun tearDown() {
         popStandaloneScreenModels()
-        StubFallbacks.uninstall()
         Dispatchers.resetMain()
     }
 

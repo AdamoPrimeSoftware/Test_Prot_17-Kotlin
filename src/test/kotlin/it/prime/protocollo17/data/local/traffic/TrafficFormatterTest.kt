@@ -29,8 +29,6 @@ import java.time.ZoneOffset
 /**
  * Formato del log traffico: le righe dei frame devono combaciare byte per byte con il log della DLL Ingenico,
  * così le tracce si confrontano con diff dopo aver tolto il timestamp (§5.4.2).
- *
- * I casi con frame e scarti usano Hex (WP1): girano dopo il merge di WP1.
  */
 class TrafficFormatterTest {
 

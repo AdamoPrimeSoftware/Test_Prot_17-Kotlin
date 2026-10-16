@@ -669,6 +669,32 @@ class Ecr17ClientTest {
         assertEquals(Ecr17Failure.Nak(4), result.failure)
     }
 
+    /**
+     * Una CancellationException dalla politica di chiusura non si inghiotte più (§2.12) e arriva al chiamante, ma lock,
+     * stato busy e CommandFinished restano garantiti: un rilancio senza il finally a parte lascerebbe il mutex preso e
+     * ogni comando successivo rifiutato Busy (M7) per sempre.
+     */
+    @Test
+    fun `CL-29 chiusura che lancia CancellationException rilascia comunque il lock`() = runTest {
+        val h = harness()
+        h.transport.scriptStatusOk()
+        h.transport.onClose = { throw CancellationException("chiusura annullata") }
+
+        val thrown = try {
+            h.client.status()
+            null
+        } catch (e: CancellationException) {
+            e
+        }
+
+        assertEquals("chiusura annullata", thrown?.message, "la CancellationException arriva al chiamante")
+        assertNull(h.client.busy.value, "stato busy rilasciato")
+        assertEquals(1, h.finished.size, "CommandFinished emesso")
+        h.transport.onClose = null
+        h.transport.scriptStatusOk()
+        outcome<CommandOutcome.Answered>(h.client.status())
+    }
+
     // ─── Operazioni di collegamento ──────────────────────────────────────────
 
     /** cancelCurrent() senza comandi in corso non fa nulla. */

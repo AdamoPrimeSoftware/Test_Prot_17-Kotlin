@@ -50,6 +50,7 @@ import it.prime.protocollo17.presentation.state.Shortcut
 import it.prime.protocollo17.presentation.state.ShortcutBus
 import it.prime.protocollo17.presentation.state.closeNeedsConfirmation
 import it.prime.protocollo17.presentation.theme.PreviewTheme
+import it.prime.protocollo17.presentation.util.AppVersion
 import it.prime.protocollo17.presentation.util.ApplyMinimumSize
 import it.prime.protocollo17.presentation.util.PickerOwner
 import it.prime.protocollo17.presentation.util.TrackPickerOwner
@@ -68,8 +69,6 @@ val MainWindowSpec = WindowSpec(defaultWidth = 1280f, defaultHeight = 800f, minW
 
 /** Chiave della geometria della finestra principale in `ui.windows`. */
 private const val MAIN_KEY = "MAIN"
-
-private const val APP_VERSION = "1.0.0"
 
 /**
  * Finestra principale (§6.18): menu, scorciatoie, avvisi globali e chiusura.
@@ -225,6 +224,7 @@ private fun NotificationsEffect(
                 val message = when (val f = failed.failure) {
                     is SimulatorFailure.PortInUse -> "Porta ${f.port} già in uso: cambiala nella finestra Simulatore"
                     is SimulatorFailure.Unexpected -> "Avvio non riuscito: ${f.message}"
+                    is SimulatorFailure.ListenerDied -> "Ascolto sulla porta ${f.port} interrotto: riavvia il simulatore"
                 }
                 notifications.error("Simulatore", message, openWindow = AppWindowId.SIMULATOR)
             }
@@ -287,7 +287,7 @@ private fun CloseConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
 private fun AboutDialog(dataFolder: String, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Protocollo17ComposeDesktop $APP_VERSION") },
+        title = { Text("Protocollo17ComposeDesktop ${AppVersion.current}") },
         text = {
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
