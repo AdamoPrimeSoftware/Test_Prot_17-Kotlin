@@ -64,6 +64,29 @@ class JournalStoreTest {
         assertEquals(listOf(JournalPhase.CREATED, JournalPhase.UNKNOWN), again.map { it.phase }, "record nuovo leggibile")
     }
 
+    /**
+     * Una riga troncata resta nel journal finché una compattazione non lo riscrive. Prima ogni avvio (readAll) creava un
+     * nuovo `.corrupt-*` con le stesse righe; ora una riga già conservata non si duplica, e una nuova si conserva da sola.
+     */
+    @Test
+    fun `righe illeggibili gia conservate non si duplicano`(): Unit = runBlocking {
+        val store = JournalStore(dir)
+        store.append(rec("a", 0, JournalPhase.CREATED, command = "P"))
+        store.close()
+        val first = "{\"attemptId\":\"a\",\"seq\":1,\"at\":5,\"pha"
+        store.file.appendText(first)
+
+        repeat(3) { JournalStore(dir).also { it.readAll() }.close() }
+        val corrupt = { dir.listFiles { f -> f.name.startsWith("journal.jsonl.corrupt-") }.orEmpty().toList() }
+        assertEquals(1, corrupt().size, "un solo file corrupt dopo tre avvii: ${corrupt().map { it.name }}")
+
+        val second = "{\"attemptId\":\"b\",\"seq\""
+        store.file.appendText("\n$second")
+        JournalStore(dir).also { it.readAll() }.close()
+        val lines = corrupt().flatMap { it.readLines() }.filter { it.isNotBlank() }
+        assertEquals(listOf(first, second).sorted(), lines.sorted(), "ogni riga illeggibile conservata una volta")
+    }
+
     /** M6: una riga CREATED rovinata non deve far sparire i record SENDING/UNKNOWN dello stesso tentativo. */
     @Test
     fun `riga CREATED corrotta con SENDING e UNKNOWN integri`(): Unit = runBlocking {
