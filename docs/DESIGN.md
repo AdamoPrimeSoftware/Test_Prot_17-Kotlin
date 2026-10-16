@@ -4047,7 +4047,7 @@ private val log = LoggerFactory.getLogger("Protocollo17.Main")
 fun main() {
     Thread.setDefaultUncaughtExceptionHandler { t, e -> log.error("Eccezione non gestita sul thread '{}'", t.name, e) }
     val dirs = AppDirs.default().ensure()
-    logBanner(dirs)                                   // JVM, OS, cartella dati, file di log
+    logBanner(dirs)                                   // versione (AppVersion.current), JVM, OS, cartelle
     if (SingleInstanceGuard.acquire(dirs.lockFile) is SingleInstanceGuard.Attempt.HeldByOther) {
         showAlreadyRunningDialog()                    // JOptionPane in runCatching
         exitProcess(0)
@@ -4629,7 +4629,7 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
    Stato al 2026-10-16: `suggestModules` ⇒ `modules("java.instrument", "jdk.unsupported")` (`java.management` non serviva); il pacchetto produce `build/compose/binaries/main/msi/Protocollo17ComposeDesktop-1.0.0.msi` ed `exe/Protocollo17ComposeDesktop-1.0.0.exe` (circa 99 MB, runtime jlink da JDK 21). La versione mostrata dall'app deriva da `version` (§2.5). Prova manuale dell'MSI, a carico dell'utente:
    1. chiudere l'app se aperta; eseguire l'MSI: installazione per macchina (chiede l'elevazione), cartella proposta nel dialog (`C:\Program Files\Protocollo17ComposeDesktop`);
    2. avviare da *Start > Protocollo17*: il collegamento, l'installer e *Impostazioni > App* mostrano l'icona dell'app (glifo bianco su Indigo, §2.5), non quella di default di Compose; *Aiuto > Informazioni* mostra la versione `1.0.0` e la cartella dati;
-   3. in `~/.protocollo17/logs/app.log` il banner di avvio e nessun `NoClassDefFoundError`/`ClassNotFoundException` (un modulo JDK mancante si vede qui);
+   3. in `~/.protocollo17/logs/app.log` il banner di avvio con la versione (`Protocollo17ComposeDesktop 1.0.0 avvio: …`) e nessun `NoClassDefFoundError`/`ClassNotFoundException` (un modulo JDK mancante si vede qui);
    4. *Strumenti > Avvia simulatore*, *Usa simulatore come terminale*, poi `s` e un `P`: esiti, log traffico e journal scritti;
    5. chiudere e riaprire (impostazioni e journal conservati); disinstallare da *Impostazioni > App*: `~/.protocollo17` resta;
    6. aggiornamento: alzare `version`, ricostruire e installare sopra (stesso `upgradeUuid`); la stessa versione non si reinstalla sopra se stessa.
