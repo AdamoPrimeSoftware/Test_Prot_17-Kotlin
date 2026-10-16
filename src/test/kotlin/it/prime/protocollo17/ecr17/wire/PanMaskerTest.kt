@@ -208,14 +208,17 @@ class PanMaskerTest {
         assertEquals(frame.last(), maskedFrame.last(), "LRC originale")
     }
 
-    /** Payload corti o troncati: nessuna eccezione; il pezzo di PAN presente viene comunque mascherato. */
+    /**
+     * Payload corti o troncati: nessuna eccezione; il pezzo di PAN presente viene mascherato per intero. Prima restavano
+     * visibili le ultime 4 cifre del PEZZO ("1111" qui), che non sono le ultime 4 del PAN ma cifre centrali.
+     */
     @Test
     fun `payload corti e troncati`() {
         assertEquals("", maskPayload(""))
         assertEquals("12345", maskPayload("12345"))
         assertEquals("123456780E", maskPayload("123456780E"))
         assertEquals("123456780E0", maskPayload("123456780E0"))
-        assertEquals("123456780E00******1111", maskPayload("123456780E000004111111"))
+        assertEquals("123456780E00**********", maskPayload("123456780E000004111111"))
     }
 
     /** Il risultato è sempre una copia: il payload del parser non viene mai modificato. */
@@ -327,6 +330,58 @@ class PanMaskerTest {
         // Sotto la soglia anche contando attraverso lo 0x7F, e 0x7F fuori dalle cifre: invariati.
         assertEquals("12345\u007F6789 \u007FA", PanMasker.maskDigitRuns("12345\u007F6789 \u007FA"))
         assertEquals("\u007F\u007F", text(PanMasker.maskDigitRuns(ascii("\u007F\u007F"))))
+    }
+
+    /**
+     * 0x7E è il separatore della riga in doppia altezza nel formato a 24 colonne dei terminali Ingenico del 2025
+     * (catture PosMock, A§9.11), quindi spezza le sequenze come lo 0x7D: un PAN non scavalca una riga. Se fosse
+     * trasparente, STAN e "ultime 4" delle righe vicine finirebbero nella stessa sequenza e verrebbero mascherati.
+     */
+    @Test
+    fun `0x7E separa le sequenze`() {
+        val rows = "STAN 000004~************************"
+        assertEquals(rows, PanMasker.maskDigitRuns(rows), "lo STAN resta leggibile")
+        assertEquals(rows, text(PanMasker.maskDigitRuns(ascii(rows))), "byte: stesso risultato")
+        assertEquals("PAN     ************1017~0,05", PanMasker.maskDigitRuns("PAN     ************1017~0,05"))
+    }
+
+    /**
+     * Frammento scartato che inizia con STX (frame troncato, residuo a fine scambio): mascheramento posizionale come
+     * per il frame intero. Prima passava dalla rete di sicurezza: con le '*' nella sequenza un esito approvato perdeva
+     * anche l'esito "00", la prova per risolvere un esito sconosciuto (M6).
+     */
+    @Test
+    fun `maskFragment posizionale sui frammenti con STX`() {
+        val approved = "\u0002100029120E00000************1017CLE38066 18711192881051000040000020"
+        val masked = text(PanMasker.maskFragment(ascii(approved)))
+        assertEquals("\u0002100029120E00***************1017CLE38066 18711192881051000040000020", masked)
+        // Senza STX resta la rete di sicurezza.
+        assertEquals("E*****************9993CLI", text(PanMasker.maskFragment(ascii("E00000438746******9993CLI"))))
+    }
+
+    /** Campo PAN troncato: tutte le cifre presenti, non le "ultime 4" del pezzo (prima `…E0000438746123` ⇒ `…****6123`). */
+    @Test
+    fun `campo PAN troncato mascherato per intero`() {
+        assertEquals("\u0002100029120E00*************", text(PanMasker.maskFragment(ascii("\u0002100029120E000004387461234"))))
+        assertEquals("100029120E00*************", maskPayload("100029120E000004387461234"))
+    }
+
+    /**
+     * PAN già troncato dal terminale con il BIN in chiaro (scontrini Ingenico, catture PosMock): le '*' fanno parte della
+     * sequenza, quindi `438746******9993` (16 caratteri) perde il BIN. Prima si contavano solo le cifre e il BIN restava
+     * in chiaro nelle righe S, negli scarti e nel log traffico. Una fila di sole '*' o una sequenza corta restano com'erano.
+     */
+    @Test
+    fun `PAN troncato con il BIN in chiaro`() {
+        assertEquals("PAN     ************9993SCAD", PanMasker.maskDigitRuns("PAN     438746******9993SCAD"))
+        assertEquals("PAN     ************9993SCAD", text(PanMasker.maskDigitRuns(ascii("PAN     438746******9993SCAD"))))
+        assertEquals("123456780S***************3224", maskPayload("123456780S679999*********3224"))
+        // Frammento scartato di un esito: anche l'esito "00" davanti al PAN finisce nella sequenza (accettato).
+        assertEquals("E*****************9993CLI", PanMasker.maskDigitRuns("E00000438746******9993CLI"))
+        assertEquals("************************", PanMasker.maskDigitRuns("************************"), "nessuna cifra")
+        assertEquals("SCAD                ****", PanMasker.maskDigitRuns("SCAD                ****"))
+        assertEquals("1234****5678", PanMasker.maskDigitRuns("1234****5678"), "12 caratteri: sotto la soglia")
+        assertEquals("************9993", PanMasker.maskDigitRuns("************9993"), "già mascherato: idempotente")
     }
 
     /** Un frame senza STX e i byte oltre l'LRC passano dalla stessa rete di sicurezza, con lo 0x7F trasparente. */

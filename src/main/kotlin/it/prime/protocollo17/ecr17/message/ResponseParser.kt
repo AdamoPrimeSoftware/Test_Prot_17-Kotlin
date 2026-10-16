@@ -50,9 +50,9 @@ object ResponseParser {
     private const val PAN_POS = 13
     private const val PAN_LEN = 19
 
-    /** Coda di fine scontrino: sei 0x7D seguiti da ESC (A§4.5.9). */
-    private val RECEIPT_END_SENTINEL: String =
-        ControlChars.RECEIPT_NEWLINE.toChar().toString().repeat(6) + ControlChars.ESC.toChar()
+    /** Pos dello stato nella risposta 's' e lunghezza minima della forma testuale ("OPERATIVE"). */
+    private const val STATUS_POS = 31
+    private const val MIN_STATUS_WORD = 3
 
     // ─── Smistamento ────────────────────────────────────────────────────────────
 
@@ -257,21 +257,46 @@ object ResponseParser {
      * Risposta 's' (A§4.5.6). La data/ora `DDMMYYhhmm` diventa un LocalDateTime validato (anno 2000+YY) e null se
      * non è una data reale: i repo producevano una stringa non validata (rust) o normalizzavano in ora locale
      * valori fuori range (C++, A§8 D11).
+     *
+     * Stato alla pos 31 in due forme (§3.14): una cifra con la release dalla pos 32 (Nexi), oppure una parola di
+     * almeno [MIN_STATUS_WORD] lettere maiuscole seguita SUBITO da una cifra o dalla fine del payload, con la release
+     * dopo la parola (Ingenico 2025: "OPERATIVE01.00.14_B2807_2807"). La cifra o la fine subito dopo distinguono la
+     * parola da un carattere di stato non numerico seguito da una release di lettere ("X" + "SYSEMV  204"), che resta
+     * nella forma Nexi con stato -1.
      */
     fun parseStatus(payload: ByteArray): StatusResponse {
         val f = FieldCollector(payload)
         val terminalId = f.raw(FieldId.TERMINAL_ID, pos = 1, len = 8)
         val replyCode = f.replyCode()
         val dateTimeRaw = f.raw(FieldId.TERMINAL_DATE_TIME, pos = 21, len = 10)
-        val statusChar = f.raw(FieldId.STATUS, pos = 31, len = 1).firstOrNull()
-        val release = f.rest(FieldId.SOFTWARE_RELEASE, 32).trimEnd(' ')
+        val word = statusWordAt(payload)
+        val statusChar: Char?
+        val release: String
+        if (word != null) {
+            statusChar = null
+            f.raw(FieldId.STATUS, pos = STATUS_POS, len = word.length)
+            release = f.rest(FieldId.SOFTWARE_RELEASE, STATUS_POS + word.length).trimEnd(' ')
+        } else {
+            statusChar = f.raw(FieldId.STATUS, pos = STATUS_POS, len = 1).firstOrNull()
+            release = f.rest(FieldId.SOFTWARE_RELEASE, STATUS_POS + 1).trimEnd(' ')
+        }
 
         return StatusResponse(
             raw = f.rawPayload(), terminalId = terminalId, replyCode = replyCode, fields = f.fields(),
             dateTimeRaw = dateTimeRaw, dateTime = parseDateTime(dateTimeRaw),
             statusDigit = if (statusChar != null && statusChar in '0'..'9') statusChar - '0' else -1,
             softwareRelease = release,
+            statusWord = word,
         )
+    }
+
+    /** Parola di stato testuale dalla pos 31 (vedi [parseStatus]), o null se lo stato è nella forma a cifra. */
+    private fun statusWordAt(payload: ByteArray): String? {
+        val text = FieldReader(payload).restFrom(STATUS_POS)
+        val end = text.indexOfFirst { it !in 'A'..'Z' }.let { if (it < 0) text.length else it }
+        if (end < MIN_STATUS_WORD) return null
+        val next = text.getOrNull(end)
+        return if (next == null || next in '0'..'9') text.substring(0, end) else null
     }
 
     /** Risposta 'T' (34 B, A§4.5.7): il totale POS si legge con qualsiasi esito. */
@@ -313,32 +338,45 @@ object ResponseParser {
     }
 
     /**
-     * Riga di scontrino 'S' (A§4.5.9): testo dalla pos 11; 0x7D → '\n'; 0x7F imposta doubleHeight ed è rimosso;
-     * la coda 7D×6 + 1B segna la fine dello scontrino ed è rimossa dal testo.
+     * Riga di scontrino 'S' (A§4.5.9): testo dalla pos 11; 0x7D → '\n'; 0x7F imposta doubleHeight ed è rimosso; 0x7E
+     * è a capo + doppia altezza (→ '\n' e doubleHeight). Un ESC (0x1B) come ULTIMO byte chiude lo scontrino: dal testo
+     * si tolgono l'ESC e la coda di 0x7D e spazi che lo precede.
      *
-     * maskPan = true: PanMasker.maskDigitRuns su raw e text (alcuni terminali stampano il PAN in chiaro). Il testo
-     * si maschera DOPO la conversione, il grezzo così com'è: maskDigitRuns tratta lo 0x7F come trasparente, quindi un
-     * PAN spezzato dalla doppia altezza è mascherato in entrambi, con lo 0x7F al suo posto nel grezzo (M9). Prima il
-     * grezzo passava da una proiezione locale (maskRawReceipt), ora la regola è una sola, in PanMasker.
+     * Prima la fine era solo la coda 7D×6 + 1B della spec Nexi, che i terminali Ingenico del 2025 non mandano mai: la
+     * loro ultima riga finisce con "}}" + ESC, o con sei blocchi "}" + 24 spazi + ESC, mentre le righe intermedie (210
+     * byte) non finiscono mai con ESC (catture IAE37 del progetto PosMock). Senza fine riconosciuta la sessione aspettava
+     * tutto `receiptDrainMs` e segnalava RECEIPT_END_MISSING su ogni scontrino. La coda Nexi resta un caso particolare.
+     * Un ESC in mezzo alla riga non chiude nulla e resta nel testo.
+     *
+     * 0x7E e 0x7F hanno ruoli diversi nei due formati di quelle catture: nel formato a righe da 24 colonne separate da
+     * 0x7D lo 0x7E prende il posto del separatore della riga in doppia altezza ("~        PAGAMENTO"); nel formato a
+     * colonne senza separatori lo 0x7F è un byte in più sul bordo di una colonna. Prima anche lo 0x7E veniva solo tolto,
+     * e "MCCHIP" e "PAGAMENTO" finivano sulla stessa riga di 48 caratteri.
+     *
+     * maskPan = true: PanMasker.maskDigitRuns sul grezzo e sul corpo PRIMA della conversione (alcuni terminali stampano
+     * il PAN in chiaro, i terminali Ingenico con il BIN visibile). maskDigitRuns tratta lo 0x7F come trasparente e lo
+     * 0x7E, come lo 0x7D, come separatore di riga: mascherando prima della conversione grezzo, corpo e testo contano le
+     * stesse sequenze, e un PAN spezzato da uno 0x7F è mascherato come una sola sequenza anche nel testo (M9).
      */
     fun parseReceiptLine(payload: ByteArray, maskPan: Boolean = true): ReceiptLine {
         val raw = FieldReader(payload).restFrom(11)
-        val isEnd = raw.endsWith(RECEIPT_END_SENTINEL)
-        val body = if (isEnd) raw.dropLast(RECEIPT_END_SENTINEL.length) else raw
-        val doubleChar = ControlChars.RECEIPT_DOUBLE.toChar()
+        val newline = ControlChars.RECEIPT_NEWLINE.toChar()
+        val isEnd = raw.endsWith(ControlChars.ESC.toChar())
+        val trimmed = if (isEnd) raw.dropLast(1).trimEnd { it == newline || it == ' ' } else raw
+        val body = if (maskPan) PanMasker.maskDigitRuns(trimmed) else trimmed
         val text = buildString(body.length) {
             for (c in body) {
-                when (c) {
-                    ControlChars.RECEIPT_NEWLINE.toChar() -> append('\n')
-                    doubleChar -> Unit
+                when (c.code) {
+                    ControlChars.RECEIPT_NEWLINE, ControlChars.RECEIPT_DOUBLE_ALT -> append('\n')
+                    ControlChars.RECEIPT_DOUBLE -> Unit
                     else -> append(c)
                 }
             }
         }
         return ReceiptLine(
             raw = if (maskPan) PanMasker.maskDigitRuns(raw) else raw,
-            text = if (maskPan) PanMasker.maskDigitRuns(text) else text,
-            doubleHeight = body.indexOf(doubleChar) >= 0,
+            text = text,
+            doubleHeight = body.any { it.code == ControlChars.RECEIPT_DOUBLE || it.code == ControlChars.RECEIPT_DOUBLE_ALT },
             isEnd = isEnd,
         )
     }

@@ -18,6 +18,7 @@ object ControlChars {
     const val LRC_BASE = 0x7F
     const val RECEIPT_NEWLINE = 0x7D  // dentro le righe S: a capo + reset
     const val RECEIPT_DOUBLE = 0x7F   // dentro le righe S: doppia altezza grassetto
+    const val RECEIPT_DOUBLE_ALT = 0x7E  // righe S a 24 colonne (Ingenico 2025, catture PosMock): a capo + doppia altezza
     const val ZERO = 0x30             // riempitivo '0'
     const val PROGRESS_TEXT_LENGTH = 20
 

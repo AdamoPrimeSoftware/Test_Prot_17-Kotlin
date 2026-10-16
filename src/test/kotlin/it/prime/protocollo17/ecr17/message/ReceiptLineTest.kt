@@ -7,11 +7,12 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * Righe di scontrino 'S' (A§4.5.9): caratteri in banda 0x7D (a capo) e 0x7F (doppia altezza), sentinella di fine
- * scontrino 7D×6 + 1B, e mascheramento del PAN che alcuni terminali stampano in chiaro (M9).
+ * Righe di scontrino 'S' (A§4.5.9): caratteri in banda 0x7D (a capo) e 0x7F/0x7E (doppia altezza), fine scontrino
+ * con l'ESC finale (sentinella Nexi 7D×6 + 1B compresa), e mascheramento del PAN che alcuni terminali stampano in
+ * chiaro (M9).
  *
  * Protegge la fine dello scontrino (senza `isEnd` la sessione non sa quando smettere di raccogliere righe, §3.21) e
- * il fatto che la sentinella non diventi sei righe vuote nel testo mostrato.
+ * il fatto che la coda di fine non diventi righe vuote nel testo mostrato.
  */
 class ReceiptLineTest {
 
@@ -45,15 +46,38 @@ class ReceiptLineTest {
         assertEquals("FINE}}}}}}\u001B", line.raw, "il grezzo conserva la sentinella")
     }
 
-    /** Solo la CODA conta: la sentinella in mezzo alla riga non chiude lo scontrino; cinque 7D non bastano. */
+    /** Solo l'ULTIMO byte conta: un ESC (anche dopo la coda Nexi) in mezzo alla riga non chiude lo scontrino. */
     @Test
-    fun `sentinella non in coda o incompleta non chiude`() {
+    fun `ESC non in coda non chiude`() {
         val middle = ResponseParser.parseReceiptLine(p("123456780SA}}}}}}\u001BB"), maskPan = false)
         assertFalse(middle.isEnd)
         assertEquals("A\n\n\n\n\n\n\u001BB", middle.text)
+    }
+
+    /**
+     * Prima la fine era solo la coda Nexi 7D×6 + 1B, e "}}" + ESC (l'ultima riga dei terminali Ingenico del 2025,
+     * catture PosMock) non chiudeva nulla: la sessione aspettava tutto il drain e segnalava RECEIPT_END_MISSING. Ora
+     * basta l'ESC finale, con qualsiasi numero di 0x7D prima.
+     */
+    @Test
+    fun `ESC finale chiude con qualsiasi coda`() {
+        val ingenico = ResponseParser.parseReceiptLine(p("100029120SCONTRATTO #12345        }}\u001B"), maskPan = false)
+        assertTrue(ingenico.isEnd)
+        assertEquals("CONTRATTO #12345", ingenico.text, "ESC, a capo e spazi finali tolti dal testo")
+        assertEquals("CONTRATTO #12345        }}\u001B", ingenico.raw, "il grezzo resta com'è sul filo")
 
         val five = ResponseParser.parseReceiptLine(p("123456780SA}}}}}\u001B"), maskPan = false)
-        assertFalse(five.isEnd)
+        assertTrue(five.isEnd)
+        assertEquals("A", five.text)
+    }
+
+    /** L'ultima riga del formato a 24 colonne (Ingenico 2025) è solo avanzamento carta: sei "}" + 24 spazi, poi ESC. */
+    @Test
+    fun `riga finale di soli avanzamenti`() {
+        val feed = "}" + " ".repeat(24)
+        val line = ResponseParser.parseReceiptLine(p("100029120S" + feed.repeat(6) + "\u001B"), maskPan = false)
+        assertTrue(line.isEnd)
+        assertEquals("", line.text)
     }
 
     /** 0x7F imposta la doppia altezza ed è rimosso dal testo. */
@@ -63,6 +87,39 @@ class ReceiptLineTest {
         assertTrue(line.doubleHeight)
         assertEquals("TOTALE 1,00\n", line.text)
         assertEquals("\u007FTOTALE 1,00}", line.raw)
+    }
+
+    /**
+     * Nel formato a righe da 24 colonne (Ingenico 2025, catture PosMock) 0x7E prende il posto del separatore 0x7D
+     * della riga in doppia altezza: a capo + doppia altezza. Prima era solo tolto e le due righe si fondevano in una.
+     */
+    @Test
+    fun `7E e' a capo e doppia altezza`() {
+        val blank = " ".repeat(24)
+        val line = ResponseParser.parseReceiptLine(p("100029120S}$blank~IMPORTO EUR         0,05}"), maskPan = false)
+        assertTrue(line.doubleHeight)
+        assertEquals("\n$blank\nIMPORTO EUR         0,05\n", line.text)
+        assertEquals("}$blank~IMPORTO EUR         0,05}", line.raw)
+    }
+
+    /**
+     * 0x7E separa due righe da 24 colonne come lo 0x7D, e un PAN non scavalca una riga: le cifre ai due lati non formano
+     * una sequenza. Trattarlo come trasparente mascherava lo STAN della riga prima e spostava le "ultime 4" del PAN.
+     */
+    @Test
+    fun `7E separa le righe anche nel mascheramento`() {
+        val stan = ResponseParser.parseReceiptLine(p("100029120S}TML 10002912 STAN 000004~" + "*".repeat(24) + "}"), maskPan = true)
+        assertTrue(stan.text.contains("STAN 000004\n"), stan.text)
+        val pan = ResponseParser.parseReceiptLine(p("100029120S}PAN     ************1017~0,05 EUR               }"), maskPan = true)
+        assertTrue(pan.text.contains("PAN     ************1017\n0,05 EUR"), pan.text)
+    }
+
+    /** M9: il PAN troncato con il BIN in chiaro che i terminali Ingenico stampano ("438746******9993") perde anche il BIN. */
+    @Test
+    fun `maskPan maschera il BIN del PAN troncato`() {
+        val line = ResponseParser.parseReceiptLine(p("100029120SPAN     438746******9993SCAD                ****"), maskPan = true)
+        assertEquals("PAN     ************9993SCAD                ****", line.text)
+        assertEquals(line.text, line.raw)
     }
 
     /** Un payload senza testo (o più corto dell'intestazione) non lancia. */

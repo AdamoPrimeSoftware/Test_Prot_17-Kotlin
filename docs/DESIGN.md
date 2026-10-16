@@ -638,6 +638,7 @@ object ControlChars {
     const val LRC_BASE = 0x7F
     const val RECEIPT_NEWLINE = 0x7D  // dentro le righe S: a capo + reset
     const val RECEIPT_DOUBLE = 0x7F   // dentro le righe S: doppia altezza grassetto
+    const val RECEIPT_DOUBLE_ALT = 0x7E  // righe S a 24 colonne (Ingenico 2025, catture PosMock): a capo + doppia altezza
     const val ZERO = 0x30             // riempitivo '0'
     const val PROGRESS_TEXT_LENGTH = 20
 
@@ -875,25 +876,29 @@ object PanMasker {
      * - s, T, C: copia identica (nessun PAN; contengono lunghe sequenze di cifre che NON vanno toccate).
      * Le sequenze del ramo maskDigitRuns si contano su tutto il payload: con il codice in pos 10 non numerico è
      * come partire dalla pos 11 (TID + '0' = 9 cifre, sotto la soglia), e con una pos 10 numerica (intestazione
-     * spostata) un PAN iniziato prima della pos 11 non resta in chiaro.
+     * spostata) un PAN iniziato prima della pos 11 non resta in chiaro. Un payload troncato dentro il campo PAN ne
+     * maschera TUTTE le cifre presenti: le ultime 4 del pezzo non sono quelle del PAN.
      */
     fun maskApplicationPayload(payload: ByteArray): ByteArray
     /** Come sopra ma su un frame STX…ETX LRC completo; l'LRC resta quello originale. */
     fun maskFrame(raw: ByteArray): ByteArray
+    /** Scarti e residui (ProtocolEvent.Discarded): con STX in testa maskFrame (posizionale), altrimenti maskDigitRuns. */
+    fun maskFragment(bytes: ByteArray): ByteArray
     /**
-     * Rete di sicurezza senza posizioni: ogni sequenza di ≥ 13 cifre ASCII consecutive diventa '*' tranne le
-     * ultime 4. Per byte scartati (ProtocolEvent.Discarded), testo delle righe S, byte non applicativi del
-     * log del simulatore. Può mascherare anche STAN/online in un frammento scartato: accettato.
-     * Lo 0x7F (doppia altezza delle righe S) è trasparente: le sequenze si contano sulla proiezione senza 0x7F e gli
-     * 0x7F restano al loro posto. Vale per entrambi gli overload (stesso risultato) e per tutti gli usi della rete di
-     * sicurezza: ramo 'S'/sconosciuti di maskApplicationPayload, frame senza STX e coda oltre l'LRC di maskFrame.
+     * Rete di sicurezza senza posizioni: ogni sequenza di ≥ 13 caratteri fatta di cifre ASCII e '*' (con almeno una
+     * cifra) diventa '*' tranne le ultime 4 cifre. Per frammenti senza STX, testo delle righe S, progress, byte non
+     * applicativi del log del simulatore. Può mascherare anche STAN/online in un frammento scartato: accettato.
+     * Lo 0x7F (doppia altezza) è trasparente: le sequenze si contano sulla proiezione senza 0x7F e gli 0x7F restano al
+     * loro posto. 0x7D e 0x7E spezzano le sequenze (separatori di riga). Vale per entrambi gli overload (stesso
+     * risultato) e per tutti gli usi della rete di sicurezza: ramo 'S'/sconosciuti di maskApplicationPayload, frame
+     * senza STX e coda oltre l'LRC di maskFrame.
      */
     fun maskDigitRuns(bytes: ByteArray): ByteArray
     fun maskDigitRuns(text: String): String
 }
 ```
 
-Dove si applica (M9): `ProtocolEvent.Wire` RX ⇒ `maskFrame`; `ProtocolEvent.Discarded` (scarti e residuo dello splitter) ⇒ `maskDigitRuns`; `ResponseParser.parseReceiptLine(maskPan = true)` ⇒ `maskDigitRuns` su `raw` e su `text`; `SimEvent.FrameOut` ⇒ `maskFrame`; byte scartati nel log del simulatore ⇒ `maskDigitRuns`; `SimEvent.FrameIn` (richieste dell'ECR, senza PAN) e i byte di controllo ⇒ invariati. **0x7F trasparente ovunque si contano le sequenze**: il terminale può inserire la doppia altezza in mezzo al PAN, e `41111111<7F>11111111` non deve contare come due sequenze da 8 cifre sotto la soglia. Prima lo 0x7F si saltava solo nel grezzo del parser (e poi nel ramo S di `maskApplicationPayload`): un frammento scartato di una riga S finiva in chiaro nel log traffico e nel log del simulatore.
+Dove si applica (M9): `ProtocolEvent.Wire` RX ⇒ `maskFrame`; `ProtocolEvent.Discarded` (scarti e residuo dello splitter) ⇒ `maskFragment` (con STX in testa `maskFrame`, altrimenti `maskDigitRuns`); `ResponseParser.parseReceiptLine(maskPan = true)` ⇒ `maskDigitRuns` su `raw` e sul corpo prima della conversione; `SimEvent.FrameOut` ⇒ `maskFrame`; byte scartati nel log del simulatore ⇒ `maskDigitRuns`; `SimEvent.FrameIn` (richieste dell'ECR, senza PAN) e i byte di controllo ⇒ invariati. **0x7F trasparente ovunque si contano le sequenze**: il terminale può inserire la doppia altezza in mezzo al PAN, e `41111111<7F>11111111` non deve contare come due sequenze da 8 cifre sotto la soglia. Prima lo 0x7F si saltava solo nel grezzo del parser (e poi nel ramo S di `maskApplicationPayload`): un frammento scartato di una riga S finiva in chiaro nel log traffico e nel log del simulatore. **0x7E no**: nel formato a righe da 24 colonne dei terminali Ingenico del 2025 (A§9.11) è il separatore della riga in doppia altezza (`~        PAGAMENTO`), come lo 0x7D spezza le sequenze e un PAN non scavalca mai una riga; trattarlo come trasparente univa righe vicine, mascherava STAN e acquirer e spostava le "ultime 4" del PAN. **Le '*' fanno parte della sequenza**: sullo scontrino quei terminali stampano il PAN già troncato con il BIN in chiaro (`438746******9993`); prima si contavano solo le cifre e il BIN restava in chiaro nelle righe S e nel log traffico, mentre sull'esito `E` (posizione nota, `maskFixedWidth`) lo stesso PAN usciva `***************9993`. Una fila di sole '*' non ha cifre e resta com'è. **Frammenti con STX in testa** (frame troncati, residui a fine scambio) passano da `maskFrame`, posizionale come per il frame intero: prima la rete di sicurezza, con le '*' nella sequenza, mascherava anche l'esito `00` di un esito approvato troncato, cioè la prova per risolvere un esito sconosciuto (M6). **Limite noto**: il mascheramento lavora un frame (o un frammento) alla volta. Nel formato a colonne senza separatori la DLL taglia lo scontrino in frame da 200 caratteri anche in mezzo a un campo (`Data 08` | `/07/25`, AID `A0000` | `000031010`, A§9.11): un PAN tagliato tra due righe `S`, in chiaro o troncato con il BIN, non viene contato come una sequenza, e il BIN (o il PAN) di quella riga resta in chiaro; lo stesso vale per un PAN diviso tra due frammenti scartati senza STX. Nelle catture la riga del PAN non cade mai su un taglio; un mascheramento a cavallo dei frame è rimandato.
 
 ### 3.9 `model/CommandCode.kt` [WP0]
 
@@ -1168,7 +1173,8 @@ enum class Verdict {
 }
 
 enum class EntryMode(val wire: String) {
-    ICC("ICC"), MAG("MAG"), MANUAL("MAN"), CLESS_MAG("CLM"), CLESS_ICC("CLI");
+    // CLE: visto su terminali Ingenico del 2025 accanto a CLI (catture PosMock, A§9.11); contactless, senza spec
+    ICC("ICC"), MAG("MAG"), MANUAL("MAN"), CLESS_MAG("CLM"), CLESS_ICC("CLI"), CLESS_CLE("CLE");
     companion object { fun fromWire(value: String): EntryMode? = entries.firstOrNull { it.wire == value.trimEnd() } }
 }
 
@@ -1209,9 +1215,9 @@ data class DccInfo(
 /** Riga di scontrino 'S' (A§4.5.9). */
 data class ReceiptLine(
     val raw: String,          // payload dalla pos 11, ISO-8859-1
-    val text: String,         // 0x7D → '\n', 0x7F rimosso, sentinella rimossa
+    val text: String,         // 0x7D e 0x7E → '\n', 0x7F rimosso, ESC finale e coda di a capo/spazi rimossi
     val doubleHeight: Boolean,
-    val isEnd: Boolean,       // terminava con 0x7D×6 + 0x1B
+    val isEnd: Boolean,       // l'ultimo byte era ESC (0x1B): ultima riga dello scontrino
 )
 
 sealed interface Ecr17Response {
@@ -1285,12 +1291,13 @@ data class PreAuthClosureResponse(           // 'c' 74 B / 'v' 109 B (A§4.5.5)
     val actionCode: String?, val dcc: DccInfo?,
 ) : TransactionResponse
 
-data class StatusResponse(                   // 's' (A§4.5.6)
+data class StatusResponse(                   // 's' (A§4.5.6, forma testuale A§9.11)
     override val raw: RawPayload, override val terminalId: String, override val replyCode: Char,
     override val fields: List<ResponseField>,
     val dateTimeRaw: String, val dateTime: LocalDateTime?,   // DDMMYYhhmm, anno 2000+YY, null se non valida
-    val statusDigit: Int,                                    // 0..9, -1 se non è una cifra
+    val statusDigit: Int,                                    // 0..9, -1 se non è una cifra (anche con statusWord)
     val softwareRelease: String,
+    val statusWord: String? = null,                          // forma testuale ("OPERATIVE"), null con la cifra
 ) : Ecr17Response
 
 data class TotalsResponse(                   // 'T' 34 B
@@ -1355,11 +1362,13 @@ Smistamento di `parse`: `E`/`V` ⇒ `parsePayment(paymentLayoutFor(...))`; `e` �
 | `e` | esito 11/2; acquirer 72/11; STAN 83/6; online 89/6 | PAN 13/19; entry 32/3; auth 35/6; importo 41/8; codice preaut. 49/9; action 58/3; data/ora 61/7; **tipo carta null** | descrizione 13/24; action 37/3; tipo carta 48/1 | — |
 | `i` (75) | esito 11/2; PAN 13/19; entry 32/3; acquirer 35/11; auth 46/6; STAN 52/6; online 58/6; data/ora 64/7; action 71/3 | — (nessun ramo KO, A§4.5.4) | — | — |
 | `c` (74) / `v` (109) | come `E BASE_71` pos 1-71 + action 72/3 | idem | idem | solo `v`: DCC flag 75/1; tasso 76/8; valuta 84/3; importo 87/12; precisione 99/1 |
-| `s` | TID 1/8; data/ora 21/10 (`DDMMYYhhmm`); stato 31/1 (cifra o -1); release 32..fine (trimEnd) | — | — | — |
+| `s` | TID 1/8; data/ora 21/10 (`DDMMYYhhmm`); **forma Nexi**: stato 31/1 (cifra o -1), release 32..fine (trimEnd); **forma testuale** (Ingenico 2025, A§9.11): parola 31/n in `statusWord`, release dalla fine della parola (trimEnd), `statusDigit` -1 | — | — | — |
 | `T` (34) | esito 11/2; totale POS 13/16 (con qualsiasi esito) | — | — | — |
 | `C` (44) | esito 11/2 | (`00`) totale POS 13/16; totale host 29/16 | (≠ `00`) descrizione 13/19 (trim); action 32/3 | — |
 
-`parseReceiptLine`: testo dalla pos 11; ogni `0x7D` diventa `'\n'`; la presenza di `0x7F` imposta `doubleHeight` e il byte viene rimosso; `isEnd` = il testo termina con `7D 7D 7D 7D 7D 7D 1B` (la sentinella è rimossa da `text`).
+Stato di `s`, due forme alla pos 31 (A§4.5.6 e A§9.11): la **parola** vale solo se sono almeno 3 lettere maiuscole `A..Z` seguite **subito** da una cifra o dalla fine del payload (`OPERATIVE01.00.14_B2807_2807`); altrimenti si legge la forma Nexi a cifra. La cifra o la fine subito dopo distinguono la parola da un carattere di stato non numerico seguito da una release di lettere (`X` + `SYSEMV  204` resta Nexi con stato -1). La UI mostra la parola come `Operativo (OPERATIVE)`, le parole ignote come `sconosciuto (<parola>)` (§6.7). Prima esisteva solo la cifra, e sui terminali Ingenico del 2025 lo stato risultava "sconosciuto" con la release `PERATIVE01.00.14…`; il layout del DESK3200 dell'utente resta da catturare (§9.2 punto 1).
+
+`parseReceiptLine`: testo dalla pos 11; ogni `0x7D` diventa `'\n'`; `0x7F` imposta `doubleHeight` e viene rimosso; `0x7E` diventa `'\n'` e imposta `doubleHeight`. Nei due formati di scontrino Ingenico del 2025 (A§9.11) i due byte hanno ruoli diversi: nel formato a righe da 24 colonne separate da `0x7D` lo `0x7E` prende il posto del separatore della riga in doppia altezza (`~        PAGAMENTO`), nel formato a colonne senza separatori lo `0x7F` è un byte in più sul bordo di una colonna; prima lo `0x7E` veniva solo tolto e due righe di stampa si fondevano in una da 48 caratteri. Con `maskPan` si mascherano il grezzo e il corpo **prima** della conversione (§3.8: `0x7F` trasparente, `0x7D` e `0x7E` separatori di riga), così grezzo, corpo e testo contano le stesse sequenze (M9). `isEnd` = **l'ultimo byte è ESC (`0x1B`)**: dal testo si tolgono l'ESC e la coda di `0x7D` e spazi che lo precede (la sentinella Nexi `7D×6 1B` è un caso particolare); un ESC in mezzo alla riga non chiude e resta nel testo. Prima `isEnd` voleva la sentinella Nexi, che i terminali Ingenico del 2025 non mandano: l'ultima riga finisce con `}}` + ESC o con sei blocchi `}` + 24 spazi + ESC, mentre le righe intermedie (210 byte) non finiscono mai con ESC (A§9.11). Senza fine riconosciuta il drain durava tutto `receiptDrainMs` con `RECEIPT_END_MISSING` su ogni scontrino.
 
 ### 3.15 `error/Ecr17Failure.kt` [WP0]
 
@@ -1693,7 +1702,7 @@ enum class WarningCode {
     DRAIN_INTERRUPTED,      // caduta, errore o limite raggiunto durante il drain (esito comunque valido)
     RX_OVERFLOW,            // RxBuffer pieno: byte scartati
     PROGRESS_LENGTH,        // progress con lunghezza diversa da 20
-    RECEIPT_END_MISSING,    // drain chiuso senza sentinella pur attendendo uno scontrino
+    RECEIPT_END_MISSING,    // drain chiuso senza la riga S finale (ESC in coda) pur attendendo uno scontrino
 }
 
 /**
@@ -1719,7 +1728,7 @@ sealed interface ProtocolEvent {
     /** Un frame completo. bytes = byte sul filo con PAN mascherato (PanMasker.maskFrame, M9); lrcNote es. "LRC 2F ok (stx)". */
     class Wire(override val seq: Long, override val at: Long, val exchangeId: Long?, val direction: FrameDirection,
         val kind: FrameKind, val code: Char?, val bytes: ByteArray, val attempt: Int?, val lrcNote: String?) : ProtocolEvent
-    /** bytes già passati da PanMasker.maskDigitRuns (un frammento di esito può contenere il PAN, M9). */
+    /** bytes già passati da PanMasker.maskFragment (un frammento di esito può contenere il PAN, M9). */
     class Discarded(override val seq: Long, override val at: Long, val exchangeId: Long?, val bytes: ByteArray,
         val reason: DiscardReason) : ProtocolEvent
     data class Progress(override val seq: Long, override val at: Long, val exchangeId: Long, val text: String) : ProtocolEvent
@@ -1941,8 +1950,8 @@ La sessione di **E1** (stampa su ECR, §3.23 punto 6) usa un proprio `TraceRecor
 
 **Primitive.**
 
-- `next(deadline): Next` con `Next = Item(SplitItem) | Timeout | LinkClosed(cause, detail)`. Ordine **vincolante**: (1) `splitter.next()`; (2) `rx.takeAll()` non vuoto ⇒ `feed` e ripeti; (3) `rx.closedCause` ⇒ `LinkClosed` (solo dopo aver consumato tutti i byte, contratto C++ A§6.2 punto 2); (4) deadline passata ⇒ `Timeout`; (5) `withTimeoutOrNull(rimanente) { rx.awaitDataOrClose() }` e ripeti. Ogni `Item` viene anche emesso come evento: `Wire` RX con `PanMasker.maskFrame` e `lrcNote`, oppure `Discarded` con `PanMasker.maskDigitRuns`. Un `Discarded(AMBIGUOUS_NAK)` produce anche, in qualsiasi fase, il warning `AMBIGUOUS_NAK` ("NAK ambiguo ignorato: nessun reinvio").
-- **Residuo dello splitter** (§3.7): `next()` trattiene il rumore in coda e i frame troncati, che quindi non diventano mai `Item`. La sessione chiama `splitter.clear()` alla fine di `run` su **ogni** via d'uscita (`Success`, ogni `Failure`, eccezioni comprese: in un `finally`, con codice non sospendente) e subito dopo lo splitter temporaneo del punto 1. Un residuo non vuoto ⇒ evento `Discarded(PanMasker.maskDigitRuns(residuo), NOISE)`. `NOISE` vale anche per un frame troncato, perché `DiscardReason` (WP0) non ha un motivo dedicato. Il residuo non riceve ACK, non è mai un esito e non passa a un altro splitter.
+- `next(deadline): Next` con `Next = Item(SplitItem) | Timeout | LinkClosed(cause, detail)`. Ordine **vincolante**: (1) `splitter.next()`; (2) `rx.takeAll()` non vuoto ⇒ `feed` e ripeti; (3) `rx.closedCause` ⇒ `LinkClosed` (solo dopo aver consumato tutti i byte, contratto C++ A§6.2 punto 2); (4) deadline passata ⇒ `Timeout`; (5) `withTimeoutOrNull(rimanente) { rx.awaitDataOrClose() }` e ripeti. Ogni `Item` viene anche emesso come evento: `Wire` RX con `PanMasker.maskFrame` e `lrcNote`, oppure `Discarded` con `PanMasker.maskFragment`. Un `Discarded(AMBIGUOUS_NAK)` produce anche, in qualsiasi fase, il warning `AMBIGUOUS_NAK` ("NAK ambiguo ignorato: nessun reinvio").
+- **Residuo dello splitter** (§3.7): `next()` trattiene il rumore in coda e i frame troncati, che quindi non diventano mai `Item`. La sessione chiama `splitter.clear()` alla fine di `run` su **ogni** via d'uscita (`Success`, ogni `Failure`, eccezioni comprese: in un `finally`, con codice non sospendente) e subito dopo lo splitter temporaneo del punto 1. Un residuo non vuoto ⇒ evento `Discarded(PanMasker.maskFragment(residuo), NOISE)`. `NOISE` vale anche per un frame troncato, perché `DiscardReason` (WP0) non ha un motivo dedicato. Il residuo non riceve ACK, non è mai un esito e non passa a un altro splitter.
 - `sendControl(ctrl)`: `options.controlLrcTx.encode(ctrl, appMode)`, `transport.send`; `TransportException` ⇒ warning `CONTROL_SEND_FAILED` e si prosegue (**best effort**, M5). Evento `Wire` TX.
 - `lrcAccepted(frame, spec)`: `true` se `check.validInConfiguredMode`; altrimenti `true` con warning `APP_LRC_OTHER_MODE` se `check.validInSomeMode && options.appLrcRx == ACCEPT_ANY_MODE && !(spec.strictResultLrc && frame.replyCode in spec.expectedReplies)`; altrimenti `false` (il chiamante invia NAK con warning `APP_LRC_INVALID`, che per l'esito rigido dice "valido solo in <modalità>: rifiutato per un esito che decide un pagamento").
 - `transmitMain(reason)` con `reason ∈ {FIRST, NAK, ACK_TIMEOUT}`:
@@ -1977,7 +1986,7 @@ Contatori locali: `nakResends` (reinvii per NAK, limite `nakRetryCount`), `timeo
    - `Progress` ⇒ `trace.progress`.
    - `Timeout` ⇒ `Failure(ResponseTimeout(responseTimeoutMs), fase corrente)`.
    - `LinkClosed` ⇒ `Failure(Cancelled(true) se cancel.cancelled, altrimenti Disconnected(cause), fase corrente)`.
-5. **Drain** (fase `DRAINING`). Finestra di silenzio = `options.drainWindowMs(spec.expectReceipt)`, **riarmata** dopo ogni frame, con un **tetto complessivo**: durata totale ≤ `max(5_000, 4 × finestra)` ms e al massimo 20 frame; raggiunto il tetto ⇒ warning `DRAIN_INTERRUPTED` ("limite del drain raggiunto") e chiusura. Regole: riga `S` ⇒ ACK + `trace.receipt` (con `isEnd` si chiude subito); applicativo con byte identici all'esito ⇒ warning `RESULT_RETRANSMITTED`, ACK di nuovo, `resultRetransmissions++`; altro applicativo con LRC accettato ⇒ ACK + `UNEXPECTED_REPLY` (+ `POSSIBLE_LOST_RESULT` con payload se in `E V e i c v`); LRC non accettato ⇒ NAK; progress ⇒ evento; controllo e `AMBIGUOUS_NAK` ⇒ ignorati (warning per l'ambiguo). Si chiude su silenzio, sentinella, tetto, `LinkClosed` (warning `DRAIN_INTERRUPTED` solo se non è `PEER_CLOSED` dopo l'esito) o errore. **Best effort**: non trasforma mai l'esito in errore (M5). Se `spec.expectReceipt` e non si è vista la sentinella ⇒ warning `RECEIPT_END_MISSING`. Con `s`, `G`, `T`, `C`, `H` e la stampa su ECR attiva la finestra è quindi `postResultDrainMs` (nessuna riga S attesa, nessun warning spurio).
+5. **Drain** (fase `DRAINING`). Finestra di silenzio = `options.drainWindowMs(spec.expectReceipt)`, **riarmata** dopo ogni frame, con un **tetto complessivo**: durata totale ≤ `max(5_000, 4 × finestra)` ms e al massimo 20 frame; raggiunto il tetto ⇒ warning `DRAIN_INTERRUPTED` ("limite del drain raggiunto") e chiusura. Regole: riga `S` ⇒ ACK + `trace.receipt` (con `isEnd` si chiude subito); applicativo con byte identici all'esito ⇒ warning `RESULT_RETRANSMITTED`, ACK di nuovo, `resultRetransmissions++`; altro applicativo con LRC accettato ⇒ ACK + `UNEXPECTED_REPLY` (+ `POSSIBLE_LOST_RESULT` con payload se in `E V e i c v`); LRC non accettato ⇒ NAK; progress ⇒ evento; controllo e `AMBIGUOUS_NAK` ⇒ ignorati (warning per l'ambiguo). Si chiude su silenzio, riga `S` con `isEnd` (ESC finale, §3.14), tetto, `LinkClosed` (warning `DRAIN_INTERRUPTED` solo se non è `PEER_CLOSED` dopo l'esito) o errore. **Best effort**: non trasforma mai l'esito in errore (M5). Se `spec.expectReceipt` e non si è vista la riga finale (`isEnd`) ⇒ warning `RECEIPT_END_MISSING`. Con `s`, `G`, `T`, `C`, `H` e la stampa su ECR attiva la finestra è quindi `postResultDrainMs` (nessuna riga S attesa, nessun warning spurio).
 6. Fase `COMPLETED`; `Success(result, ackMode)`.
 
 **Cancellazione.** Due vie, entrambe gestite: (a) `Ecr17Client.cancelCurrent()` chiama `token.cancel()` e `transport.abort()` ⇒ la sessione vede `LinkClosed(ABORTED)` (o il token in `transmitMain`) e restituisce `Cancelled(byUser = true)`; (b) cancellazione della coroutine chiamante ⇒ `CancellationException` attraversa la sessione (mai catturata), il client fa `transport.abort()` in `withContext(NonCancellable)` e rilancia. Il journal gestisce (b) da solo (§5.3).
@@ -2055,7 +2064,7 @@ stateDiagram-v2
     AwaitingResult --> NoAnswer: deadline, caduta o annullamento
     ResultReceived --> Drain: ACK best effort
     Drain --> Drain: riga S, esito ritrasmesso, orfano
-    Drain --> Completed: silenzio, sentinella, tetto, caduta o errore
+    Drain --> Completed: silenzio, riga S finale, tetto, caduta o errore
     NoAnswer --> Unknown: comando journaled
     NoAnswer --> Failed: comando non journaled
     Completed --> [*]
@@ -3725,7 +3734,7 @@ object ResultViewMapper {
 | `Answered`, `HasResult` `APPROVED` | SUCCESS (WARNING se `needsReview`) | `APPROVATO` (per `T`/`C` "OK"); con `needsReview` "APPROVATO — DA VERIFICARE" | — |
 | `Answered`, `DECLINED` | DANGER | `RIFIUTATO` | descrizione d'errore del terminale |
 | `Answered`, `CARD_NOT_PRESENT` / `UNKNOWN_TAG` / `UNRECOGNIZED` | WARNING | `CARTA NON PRESENTE (05)` / `TAG SCONOSCIUTO (09)` / `ESITO NON RICONOSCIUTO (xx)` | — |
-| `Answered` `StatusResponse` (non `HasResult`) | INFO | `STATO: <testo cifra>` (tabella Nexi A§4.6: 0 non configurato … 6 aggiornamento SW in sospeso, altro "sconosciuto (x)") | data/ora e release |
+| `Answered` `StatusResponse` (non `HasResult`) | INFO | `STATO: <testo>` (`FieldLabels.statusText(response)`: cifra con la tabella Nexi A§4.6, 0 non configurato … 6 aggiornamento SW in sospeso, altro "sconosciuto (x)"; parola `OPERATIVE` ⇒ "Operativo (OPERATIVE)", altre "sconosciuto (<parola>)", §3.14) | data/ora e release |
 | `Acknowledged` | INFO | `CONFERMATO (ACK)` | per `R` verso ECR: n righe ricevute |
 | `NotSent` | NEUTRAL | `NON INVIATO` | `FailureMessages` |
 | `Refused` | DANGER | `RIFIUTATO DAL TERMINALE (NAK)` | `FailureMessages` |
@@ -4305,16 +4314,16 @@ class ScriptedTransport(private val scope: CoroutineScope, private val wallClock
 | `FrameCodecTest` | tutte le righe di A§9.3 (encode AB std `02 41 42 03 7C`; round trip in ogni modalità; LRC corrotto `HELLO` `3D`→`C2` = Application `validLrc=false`; `[06]`, `[15]`; `decode(encodeControl)`; `[06 00]`, `[06 03 FF]`, `[15 99 42]`; vuoto; `[01]`; progress `"ELABORAZIONE...     "`; STX senza ETX; STX ETX senza LRC; `[99 00]`; byte dopo LRC; concatenati; SOH senza EOT); frame reali A§9.8: P [1] LRC `2F`, R [37] LRC `2C`, `s` TID zero in stx = `02 30…73 03 3D` |
 | `FrameSplitterTest` | L§13.3 seconda tabella: `06 03 7A` ⇒ WIRE; `06 03 78` ⇒ SAME_AS_APP; `06 03 00` ⇒ MISMATCH (tollerante) / Discarded 1 byte (rigido); `06 FF 06 03 7A`+esito ⇒ Discarded(`06`, CONTROL_WITHOUT_ETX), Discarded(`FF`, NOISE), ACK, esito (lo stesso per `15 FF`+ACK); `06`+`02…` ⇒ Control BARE ed esito integro; **`06 03`+`02…` ⇒ Control(ACK, BARE) di 2 byte ed esito integro** (prima: MISMATCH che consumava lo STX); `06 03` da solo ⇒ attende; `flushBareControl` con solo `06` ⇒ ACK BARE; **asimmetria NAK**: `15`+`02…` ⇒ Discarded(1, AMBIGUOUS_NAK) ed esito integro; `15 03`+`02…` ⇒ Discarded(2, AMBIGUOUS_NAK) ed esito integro; `15 03 00` ⇒ Discarded(3, AMBIGUOUS_NAK) sia `TOLERANT` sia `STRICT`; `15 03 69` e `15 03 6B` ⇒ Control(NAK); `flushBareControl` con solo `15` o `15 03` ⇒ Discarded(AMBIGUOUS_NAK); LRC uguale a `02` (`"123456780E00"+"0"*60` in std, A§3.1) non interpretato; STX annidato ⇒ RESYNC; rumore consecutivo accorpato; OVERSIZED; righe reali [2][3][4] concatenate ⇒ ACK, Progress, Application con `matchingModes == {STX}`; **equivalenza** chunk unico vs byte per byte sulla stessa sequenza (comprese le nuove righe) |
 | `HexTest` | `spaced` maiuscolo e minuscolo con spazio finale (`"06 03 7a "`); `parse` tollerante; `printable` con `<STX>`/`<ETX>`/`<1B>` |
-| `PanMaskerTest` | `maskForDisplay("4111111111111111")` = `"************1111"`; `("123")` = `"****"`; `("492917******0114")` = `"******0114"` (A§9.10); `maskFixedWidth("000558278******4768")` = `"***************4768"`; `maskApplicationPayload(E22_CLEAR)` maschera solo pos 13-31; `E4` (KO) invariato; `e`, `c`, `v` approvati mascherati; **`i` con esito `01` (`I75_KO_CLEAR`) mascherato** (nessun ramo KO, A§4.5.4); riga `S` `RECEIPT_PAN` ⇒ `4111111111111111` non compare; **riga `S` (e codice sconosciuto) con il PAN spezzato da 0x7F** ⇒ mascherato con lo 0x7F al suo posto, sia in `maskApplicationPayload` (uguale a `ReceiptLine.raw` del parser) sia in `maskFrame`; `maskDigitRuns` (byte e stringa, stesso risultato) su un frammento con il PAN spezzato da 0x7F, frame senza STX e coda oltre l'LRC ⇒ mascherati; `s` e `T` invariati (le loro lunghe sequenze di cifre restano); `maskDigitRuns` su un frammento `E22_CLEAR` scartato ⇒ nessuna sequenza di 13+ cifre in chiaro; 12 cifre invariate; `maskFrame` lascia l'LRC originale |
+| `PanMaskerTest` | `maskForDisplay("4111111111111111")` = `"************1111"`; `("123")` = `"****"`; `("492917******0114")` = `"******0114"` (A§9.10); `maskFixedWidth("000558278******4768")` = `"***************4768"`; `maskApplicationPayload(E22_CLEAR)` maschera solo pos 13-31; `E4` (KO) invariato; `e`, `c`, `v` approvati mascherati; **`i` con esito `01` (`I75_KO_CLEAR`) mascherato** (nessun ramo KO, A§4.5.4); riga `S` `RECEIPT_PAN` ⇒ `4111111111111111` non compare; **riga `S` (e codice sconosciuto) con il PAN spezzato da 0x7F** ⇒ mascherato con lo 0x7F al suo posto, sia in `maskApplicationPayload` (uguale a `ReceiptLine.raw` del parser) sia in `maskFrame`; `maskDigitRuns` (byte e stringa, stesso risultato) su un frammento con il PAN spezzato da 0x7F, frame senza STX e coda oltre l'LRC ⇒ mascherati; `s` e `T` invariati (le loro lunghe sequenze di cifre restano); `maskDigitRuns` su un frammento `E22_CLEAR` scartato ⇒ nessuna sequenza di 13+ cifre in chiaro; 12 cifre invariate; `maskFrame` lascia l'LRC originale; **0x7E spezza le sequenze** (separatore di riga del formato a 24 colonne Ingenico 2025, A§9.11: `STAN 000004~***…` e `…1017~0,05` invariati); **PAN troncato con il BIN in chiaro** (`438746******9993`, `679999*********3224`) ⇒ restano solo le ultime 4; sole '*', 12 caratteri e PAN già mascherato ⇒ invariati; **`maskFragment`** con STX in testa ⇒ posizionale (esito `00`, STAN e online di un `E` troncato leggibili), senza STX ⇒ rete di sicurezza; **campo PAN troncato** ⇒ tutte le cifre presenti mascherate (prima restavano le ultime 4 del pezzo) |
 
 **WP2, `ecr17/message`**
 
 | Test | Casi (fonte) |
 |---|---|
 | `RequestEncoderTest` | A§9.4: status `"123456780s"` e frame std `…03 34`; status id corto `"42"` ⇒ `"000000420s"`; TID 9 cifre ⇒ FieldOverflow; pagamento len 167 e layout completo con LRC `2C/2D/2F/2E`; importo max `99999999`; negativo ⇒ NegativeAmount; `100_000_000` ⇒ FieldOverflow; storno `"123456780S8765432100012300"`; storno con stan null ⇒ `"000000"` (LRC std `1C`, stx `1D`); STAN 7 cifre ⇒ FieldOverflow; esteso con flag (`additionalGtData=true` solo nel builder di basso livello: `[18]='1'`); testo `"ABC"` allineato a destra in `[156..159]`; preautorizzazione `[9]='p'`; integrazione 176 `[159..168]="123456789"`; chiusura preaut. `"000000042"`; codice preaut. 10 cifre ⇒ FieldOverflow; verifica carta (39); chiusura `C` (LRC std `0C`, stx `0D`); totali `T` (`1B`/`1A`); `G` (`08`/`09`); `E1`/`E0` con le 4 LRC; ristampa `"123456780R10"+"0"*10`; flusso C++ `buildPaymentLike('P',"12345678","00000001",650,…)` LRC std `25`. A§9.8 (stx, TID/ECR `00000000`): `P` importo 1 tipo 0 = `Frames.P1`, frame [1] LRC `2F`; importo 10 tipo `DEBIT` LRC `2E` (riga [13]); `s` `3D`, `E1` `3A`, `G` `09`, `T` `1A`, `C` `0D`, `R(TERMINAL,LAST_FINANCIAL)` `1C`, `R(ECR,…)` `1D`. Validazione: TID `"12AB"` ⇒ NotDigits; testo `"caffè"` ⇒ NonAscii(index 4); `i` con codice vuoto ⇒ Required; più errori restituiti insieme; nessun byte NUL in nessun builder (proprietà su tutte le richieste) |
-| `ResponseParserTest` | A§9.5: `payment_positive`, `payment_negative` (descrizione trim, tipo carta `"3"`), `payment_with_currency_exchange` (107 B: `rate` = `BigDecimal("1.2345")`, valuta USD, precisione 2), `status` (`LocalDateTime` 2025-02-01T15:30, stato 2, release `"V1.2.3"`), `totals`, `close_positive`, `close_negative` (`"SBILANCIO"`, action `"100"`), `pre_auth_positive`, regressione tipo carta null con importo che termina in 1, `pre_auth_negative`, difensivi (`parsePayment("")` e `parseStatus("123")` ⇒ nessuna eccezione, stato -1), mappatura esiti `00/01/05/09/zz`. A§9.7 pay approvato (`ICC`, `CREDIT`, `AUTH01`). L§13.6: `i75` (acquirer `"ACQ"`, auth `"AUTH01"`, STAN `"000042"`, online `"000099"`, data/ora `"2111520"`, action `"000"`), `e106` diretto **e** come risposta a `G` (⇒ `PreAuthResponse`), `v109` (DCC applicato, action `"000"`), `S84` con inviato `S` (authCode null, action `"000"`), `U34` ⇒ `parse` restituisce null. Sintetici: `X` 92 (action 72/3, importo host 75/8), `H` KO (action 37/3). D6: descrizione KO con byte `0xE8` in pos 20 ⇒ STAN/online alle posizioni giuste. `maskPan=true` ⇒ PAN mascherato in `pan`, `raw` e `fields` (anche per `i` KO) |
-| `ReceiptLineTest` | `0x7D` ⇒ `'\n'`; sentinella `7D×6 1B` ⇒ `isEnd` e rimossa; `0x7F` ⇒ `doubleHeight`; `maskPan = true` su `RECEIPT_PAN` ⇒ PAN mascherato in `raw` e `text` |
-| `IngenicoCaptureTest` | i 6 esiti reali A§9.8 ([4], [10], [16], [22], [28], [34]): LRC valido **solo** in `stx` (con `LrcMode.compute`) e campi attesi della tabella A§9.8 |
+| `ResponseParserTest` | A§9.5: `payment_positive`, `payment_negative` (descrizione trim, tipo carta `"3"`), `payment_with_currency_exchange` (107 B: `rate` = `BigDecimal("1.2345")`, valuta USD, precisione 2), `status` (`LocalDateTime` 2025-02-01T15:30, stato 2, release `"V1.2.3"`), **stato testuale** `OPERATIVE` + `01.00.14_B2807_2807` (`statusWord`, STATUS 31/9, release 40/19) e ai bordi (parola senza release ⇒ vale; `OK1.0` ⇒ forma Nexi; `X` + `SYSEMV  204` ⇒ forma Nexi, `statusWord` null), `totals`, `close_positive`, `close_negative` (`"SBILANCIO"`, action `"100"`), `pre_auth_positive`, regressione tipo carta null con importo che termina in 1, `pre_auth_negative`, difensivi (`parsePayment("")` e `parseStatus("123")` ⇒ nessuna eccezione, stato -1), mappatura esiti `00/01/05/09/zz`. A§9.7 pay approvato (`ICC`, `CREDIT`, `AUTH01`). L§13.6: `i75` (acquirer `"ACQ"`, auth `"AUTH01"`, STAN `"000042"`, online `"000099"`, data/ora `"2111520"`, action `"000"`), `e106` diretto **e** come risposta a `G` (⇒ `PreAuthResponse`), `v109` (DCC applicato, action `"000"`), `S84` con inviato `S` (authCode null, action `"000"`), `U34` ⇒ `parse` restituisce null. Sintetici: `X` 92 (action 72/3, importo host 75/8), `H` KO (action 37/3). D6: descrizione KO con byte `0xE8` in pos 20 ⇒ STAN/online alle posizioni giuste. `maskPan=true` ⇒ PAN mascherato in `pan`, `raw` e `fields` (anche per `i` KO) |
+| `ReceiptLineTest` | `0x7D` ⇒ `'\n'`; sentinella `7D×6 1B` ⇒ `isEnd` e rimossa; **ESC finale** con qualsiasi coda (`}}` + ESC, cinque `7D` + ESC, sei blocchi `}` + 24 spazi + ESC) ⇒ `isEnd`, coda tolta dal testo; ESC in mezzo ⇒ non chiude; `0x7F` ⇒ `doubleHeight` e rimosso; `0x7E` ⇒ `'\n'` e `doubleHeight` (forma reale `}` + 24 spazi + `~IMPORTO EUR`); `maskPan = true` su `RECEIPT_PAN` ⇒ PAN mascherato in `raw` e `text`, anche spezzato da 0x7F e troncato con il BIN in chiaro; 0x7E separa le righe anche nel mascheramento (STAN e ultime 4 della riga accanto restano) |
+| `IngenicoCaptureTest` | i 6 esiti reali A§9.8 ([4], [10], [16], [22], [28], [34]): LRC valido **solo** in `stx` (con `LrcMode.compute`) e campi attesi della tabella A§9.8. **Catture PosMock** (A§9.11): ogni frame (P, X, E1, s inviati; E, s, S, t ricevuti) valido solo in `stx`; l'encoder riproduce byte per byte P e X con testo, E1 e s; `s` testuale `OPERATIVE` su due terminali; X da 92 (action `000`, importo host 5 = richiesto, entry `CLE`); P da 71 e da 74 (letto `BASE_71`), con `maskPan` anche il BIN visibile mascherato; rifiuti `ABORTED_MANUALLY` e `CARD_SEARCH_TIMEOUT` (tipo carta `0`, online di spazi ⇒ null); righe `S` reali (righe da 24 colonne con lo 0x7E come a capo, intermedia non finale, le due forme dell'ultima riga, PAN troncato con il BIN mascherato nel testo e nel grezzo); `t` da 225 B del DESK3200 senza parser |
 
 **WP0**: `RxBufferTest` (append/takeAll; epoca vecchia ignorata; `markClosed` dopo dati ⇒ i dati restano leggibili prima della chiusura; `awaitDataOrClose` si sveglia su append e su chiusura; overflow scarta i byte più vecchi e imposta `overflowed`); `CloseGuardTest` (nessun comando ⇒ false; `s` in `AWAITING_RESULT` ⇒ false; `P` in `CONNECTING` ⇒ false; `P` in `SENDING` ⇒ true; `H` in `AWAITING_ACK` ⇒ true).
 
@@ -4697,7 +4706,7 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
 | R1 | ACK scartati per LRC di controllo diverso ⇒ ritrasmissione di un pagamento (A§12.9) | `ControlLrcRule` separata, splitter tollerante sull'ACK con ETX obbligatorio, progress come ACK implicito, `IMPLICIT_GO_AHEAD` di default (SE-04/05/08/44) |
 | R2 | Esito tardivo o stantio attribuito al comando sbagliato | `PER_COMMAND`; in `PERSISTENT` chiusura del link dopo ogni esito mancante o sospetto; `preSendQuietMs`; orfani loggati e allegati al journal; codice atteso obbligatorio anche nell'handshake; `EARLY_RESULT` da verificare; blocco per famiglia di `H` (SE-17/18/19/47, CL-23/25, IT-22) |
 | R3 | Timeout esito troppo corto (48,6 s osservati) | default 120 s, deadline mai estesa ma configurabile |
-| R4 | Layout non verificati (`i`, `c`/`v`, X-92, S-84, H-KO, `G` dopo `p/i/c`) | parser dedicati, payload grezzo sempre conservato e mostrato con pos/len; catture dal log traffico |
+| R4 | Layout non verificati (`i`, `c`/`v`, S-84, H-KO, `G` dopo `p/i/c`; X-92 confermato su un altro terminale Ingenico, A§9.11) | parser dedicati, payload grezzo sempre conservato e mostrato con pos/len; catture dal log traffico; i layout reali di `s` testuale e della fine scontrino già trovati in A§9.11 |
 | R5 | Testo non ASCII sposta i campi | uscita solo ASCII con errore visibile; ingresso ISO-8859-1 |
 | R6 | CCV senza Protocollo 17 (solo ZVT/OPI) | profilo marcato IPOTESI, porta obbligatoria, avviso sulle porte ZVT/OPI |
 | R7 | `IMPLICIT_GO_AHEAD` attende 120 s se il frame si è davvero perso | fase GO_AHEAD visibile nell'overlay, Annulla con esito sconosciuto, NAK tardivo gestito (SE-30) |
@@ -4712,20 +4721,22 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
 
 ### 9.2 Verifiche da fare sull'Ingenico (in quest'ordine, mai con `P` per le sonde)
 
-1. **Sonda LRC con `s`**: profilo Ingenico, TID `00000000`; verificare frame `02 30…73 03 3D` nel log traffico e risposta `s` con TID `02575733` (o "parametri ECR non configurati" se non risponde, A§4.5.6). Ripetere cambiando l'LRC applicativo per vedere il NAK (si può provare prima col simulatore impostato su un'altra modalità, IT-23).
+Prima di tutto l'indirizzo: il 12/08/2026 il DESK3200 riportava nella risposta `t` l'IP `192.168.1.106` (A§9.11), non il `192.168.1.131` delle catture di marzo e del default di §5.2.1. Probabilmente è DHCP: verificarlo in *Opzioni* (meglio con una prenotazione DHCP sul router) prima delle sonde.
+
+1. **Sonda LRC con `s`**: profilo Ingenico, TID `00000000`; verificare frame `02 30…73 03 3D` nel log traffico e risposta `s` con TID `02575733` (o "parametri ECR non configurati" se non risponde, A§4.5.6). Annotare **quale forma dello stato** manda il DESK3200: cifra Nexi alla pos 31, o parola (`OPERATIVE` + release) come i terminali Ingenico del 2025 (A§9.11, §3.14); la cattura va in `IngenicoCaptureTest`. Ripetere cambiando l'LRC applicativo per vedere il NAK (si può provare prima col simulatore impostato su un'altra modalità, IT-23).
 2. **`T` e `G`**: layout `T` 34 B; risposta di `G` dopo i pagamenti della cattura (lunghezza, codice).
 3. **Pagamento da 0,01 € annullato, poi approvato**: confrontare riga per riga il log traffico con `2026_03_18-iaedll-log.txt` (stessi byte TX, ACK `06 03 7A` in entrambe le direzioni, un progress, `E` 71 B).
 4. **Variante ACK** (L§10.6 punto 8): impostare l'ACK in uscita `SAME_AS_APP` (`06 03 78`) **e** il drain post-esito ad almeno **5 000 ms** (Opzioni → Tempi), poi lanciare `s`/`T`: se compare `RESULT_RETRANSMITTED` il terminale valida l'LRC dei nostri ACK (conferma che `WIRE` è obbligatorio). Con il drain di default (100 ms) si vedono solo i reinvii immediati: l'assenza del warning **non** dimostra nulla. Riportare poi il drain a 100 ms. Una modalità "sonda ACK" con drain dedicato è prevista per v1.1.
 5. **Persistenza**: modalità persistente, due `s` a 5 s e a 60 s; chi chiude il TCP (link `Closed(PEER_CLOSED)` nel log)?
-6. **NAK**: forma reale (`15 03 69` atteso, mai visto): provocarlo con un LRC applicativo sbagliato su `s`. Se il terminale usa un'altra forma, il log mostra `AMBIGUOUS_NAK`: in quel caso aggiornare la regola dopo la cattura, mai renderla tollerante a priori.
-7. **Comandi mai catturati**: `X`, `H`, `S` (26 B accettato? la DLL inviava anche l'importo), `p`, `i`, `c`, `C`, `E1` + righe `S` (ordine rispetto all'esito, sentinella), `R` verso ECR. Salvare i log traffico come vettori di test.
-8. **Tempi**: ACK, progress ed esito rispetto ai default (ACK 2 s, esito 120 s); stato con parametri ECR assenti.
+6. **NAK**: forma reale `15 03 69`, mai vista dal DESK3200 ma vista da un altro terminale Ingenico, che la mandava a un `t` (A§9.11): provocarla con un LRC applicativo sbagliato su `s`. Se il terminale usa un'altra forma, il log mostra `AMBIGUOUS_NAK`: in quel caso aggiornare la regola dopo la cattura, mai renderla tollerante a priori.
+7. **Comandi mai catturati sul DESK3200**: `X`, `H`, `S` (26 B accettato? la DLL inviava anche l'importo), `p`, `i`, `c`, `C`, `E1` + righe `S` (ordine rispetto all'esito, forma dell'ultima riga), `R` verso ECR. Salvare i log traffico come vettori di test. Già visti su un altro terminale Ingenico (A§9.11): `X` da 92 B con l'importo host uguale a quello richiesto; `E1` (solo ACK, mandato dalla DLL solo prima delle `X` con stampa su ECR; non persistente: il `P` che segue E1 + X + `s` non riceve righe `S`); righe `S` che arrivano **dopo** l'esito, ciascuna con il suo ACK: la prima 6-120 ms dopo l'ACK dell'esito, poi una ogni 130-200 ms (scontrino completo in circa 0,8 s), con l'ultima chiusa dall'ESC finale (§3.14).
+8. **Tempi**: ACK, progress ed esito rispetto ai default (ACK 2 s, esito 120 s); stato con parametri ECR assenti. Su un altro terminale Ingenico un rifiuto `CARD_SEARCH_TIMEOUT` (carta mai avvicinata) è arrivato **128,7 s** dopo il `P`, oltre i 120 s di default: con i default diventerebbe un esito sconosciuto che blocca (M6). Misurare quanto aspetta il DESK3200 prima di rinunciare alla carta; il default del timeout esito è da decidere a parte (R3).
 9. **CCV** (L§10.6): verificare che il terminale abbia un'applicazione Protocollo 17 su Ethernet e la sua porta; ripetere 1-8; promuovere il profilo da IPOTESI a OSSERVATO solo con una cattura.
 
 ### 9.3 Punti aperti che il design lascia configurabili
 
 - Ritrasmissione su NAK dei finanziari (assunta sicura: NAK valido = frame rifiutato; un NAK dopo invii senza risposta porta comunque a `Unknown`).
-- Tabella degli stati di `s`: si mostra quella Nexi 0..6 (A§4.6), con la cifra grezza sempre visibile.
+- Tabella degli stati di `s`: si mostra quella Nexi 0..6 (A§4.6), con la cifra grezza sempre visibile; per la forma testuale si conosce solo `OPERATIVE` (A§9.11), le altre parole si mostrano come arrivano.
 - Comandi solo-DLL, tipi pagamento `6/7/8`, seriale: fuori perimetro (U9), da catturare con l'app WPF prima di implementarli.
 - Confronto campo per campo con i default del profilo (override): rimandato a quando una cattura CCV farà divergere i profili (§5.2.1).
 
@@ -4733,7 +4744,7 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
 
 Il codice e questo documento sono allineati su ciò che il codice fa; restano due incoerenze di progetto, **non decise**:
 
-1. **`T`, `C`, `H` con la stampa su ECR.** §3.21 punto 5 dice che con `s`, `G`, `T`, `C`, `H` e la stampa su ECR attiva il drain usa `postResultDrainMs`, senza righe `S` attese né warning. La formula di §3.23 punto 7 (`expectReceipt = (ecrPrinting && command.wantsEcrPrintingSetup) || collectReceiptAfterAck`) vale invece `true` per `T`, `C` e `H`, che hanno `wantsEcrPrintingSetup = true` (§3.9): oggi quei comandi ricevono `E1`, usano la finestra `receiptDrainMs` e, senza sentinella, il warning `RECEIPT_END_MISSING`. Va deciso se `T`/`C`/`H` producono righe `S` sul terminale reale (§9.2 punto 7), e quindi se correggere il testo o la formula.
+1. **`T`, `C`, `H` con la stampa su ECR.** §3.21 punto 5 dice che con `s`, `G`, `T`, `C`, `H` e la stampa su ECR attiva il drain usa `postResultDrainMs`, senza righe `S` attese né warning. La formula di §3.23 punto 7 (`expectReceipt = (ecrPrinting && command.wantsEcrPrintingSetup) || collectReceiptAfterAck`) vale invece `true` per `T`, `C` e `H`, che hanno `wantsEcrPrintingSetup = true` (§3.9): oggi quei comandi ricevono `E1`, usano la finestra `receiptDrainMs` e, senza la riga finale, il warning `RECEIPT_END_MISSING`. Va deciso se `T`/`C`/`H` producono righe `S` sul terminale reale (§9.2 punto 7), e quindi se correggere il testo o la formula. Le catture PosMock (A§9.11) mostrano righe `S` dopo `E1` solo per `X`: per `T`, `C` e `H` non dicono nulla.
 2. **`E1` non ripetuto nel replay.** Il replay di §3.23 punto 8 (solo `s T G E`, M1) riesegue la sessione principale con lo stesso `ExchangeSpec` sulla nuova connessione, ma non ripete il `PRINTING_SETUP` del punto 6. Per `T` con la stampa su ECR la procedura ripetuta parte senza `E1` (che non è persistente, A§4.3.6) e si aspetta comunque le righe `S`. Va deciso se il replay debba ripetere `E1` o se basti documentarlo.
 
 ---

@@ -4,6 +4,7 @@ import it.prime.protocollo17.domain.util.formatCents
 import it.prime.protocollo17.ecr17.model.EntryMode
 import it.prime.protocollo17.ecr17.model.FieldId
 import it.prime.protocollo17.ecr17.model.ResponseField
+import it.prime.protocollo17.ecr17.model.StatusResponse
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -12,7 +13,8 @@ import java.math.RoundingMode
  *
  * Il valore leggibile tiene SEMPRE accanto il grezzo tra parentesi ("Credito (2)", "Contactless chip (CLI)"):
  * è un'app di test, e chi confronta con lo scontrino o con il log della DLL deve poter vedere il byte vero.
- * La tabella degli stati di `s` è quella Nexi 0..6 (A§4.6), con la cifra grezza sempre visibile (§9.3).
+ * La tabella degli stati di `s` è quella Nexi 0..6 (A§4.6), con la cifra grezza sempre visibile (§9.3); i terminali
+ * Ingenico del 2025 mandano invece una parola ("OPERATIVE"), mostrata anch'essa tra parentesi.
  */
 object FieldLabels {
 
@@ -75,9 +77,23 @@ object FieldLabels {
             FieldId.DCC_RATE -> rate(trimmed)
             FieldId.DCC_APPLIED -> if (trimmed == "1") "Sì (1)" else "No ($trimmed)"
             FieldId.TERMINAL_DATE_TIME -> terminalDateTime(trimmed)
-            FieldId.STATUS -> trimmed.singleOrNull()?.digitToIntOrNull()?.let { statusText(it) } ?: trimmed
+            FieldId.STATUS -> trimmed.singleOrNull()?.digitToIntOrNull()?.let { statusText(it) }
+                ?: if (trimmed.length > 1) statusWordText(trimmed) else trimmed
             else -> trimmed
         }
+    }
+
+    /** Stato del terminale dalla risposta `s` in una delle due forme (cifra Nexi o parola Ingenico, §3.14). */
+    fun statusText(response: StatusResponse): String =
+        response.statusWord?.let { statusWordText(it) } ?: statusText(response.statusDigit)
+
+    /**
+     * Forma testuale dello stato (terminali Ingenico 2025): "OPERATIVE" è l'unica parola vista finora; le altre si
+     * mostrano così come arrivano, perché non sappiamo cosa vogliano dire.
+     */
+    fun statusWordText(word: String): String = when (word) {
+        "OPERATIVE" -> "Operativo (OPERATIVE)"
+        else -> "sconosciuto ($word)"
     }
 
     /** Stato del terminale dalla cifra di `s` (tabella Nexi, A§4.6); -1 = non era una cifra. */
@@ -99,6 +115,7 @@ object FieldLabels {
         EntryMode.MANUAL -> "Manuale (MAN)"
         EntryMode.CLESS_MAG -> "Contactless banda (CLM)"
         EntryMode.CLESS_ICC -> "Contactless chip (CLI)"
+        EntryMode.CLESS_CLE -> "Contactless (CLE)"
         null -> raw
     }
 

@@ -91,7 +91,7 @@ object ResultViewMapper {
                 "%02d/%02d/%04d %02d:%02d".format(it.dayOfMonth, it.monthValue, it.year, it.hour, it.minute)
             } ?: response.dateTimeRaw
             val release = response.softwareRelease.ifBlank { "—" }
-            return Summary(ResultTone.INFO, "STATO: ${FieldLabels.statusText(response.statusDigit)}", "Data/ora terminale $dateTime · release $release")
+            return Summary(ResultTone.INFO, "STATO: ${FieldLabels.statusText(response)}", "Data/ora terminale $dateTime · release $release")
         }
         val hasResult = response as? HasResult ?: return Summary(ResultTone.NEUTRAL, "RISPOSTA '${response.replyCode}' RICEVUTA", null)
         val review = outcome.needsReview

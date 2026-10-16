@@ -436,6 +436,34 @@ class ResponseParserTest {
         assertNull(r.dateTime, "31 febbraio non esiste")
         assertEquals(-1, r.statusDigit)
         assertEquals("SYSEMV  204", r.softwareRelease)
+        assertNull(r.statusWord, "X seguito da lettere non è la forma testuale: resta Nexi con stato -1")
+    }
+
+    /**
+     * Forma testuale dei terminali Ingenico del 2025 (catture PosMock, vettori reali in IngenicoCaptureTest): prima
+     * lo stato era "sconosciuto" e la release "PERATIVE01.00.14_B2807_2807". Vettore: TID 10002912, 08/07/2025.
+     */
+    @Test
+    fun `stato testuale OPERATIVE`() {
+        val r = ResponseParser.parseStatus(p("100029120s0000000000" + "0807251125" + "OPERATIVE" + "01.00.14_B2807_2807"))
+        assertEquals("OPERATIVE", r.statusWord)
+        assertEquals(-1, r.statusDigit)
+        assertEquals("01.00.14_B2807_2807", r.softwareRelease)
+        assertEquals(ResponseField(FieldId.STATUS, 31, 9, "OPERATIVE"), field(r.fields, FieldId.STATUS))
+        assertEquals(ResponseField(FieldId.SOFTWARE_RELEASE, 40, 19, "01.00.14_B2807_2807"), field(r.fields, FieldId.SOFTWARE_RELEASE))
+        assertEquals(LocalDateTime.of(2025, 7, 8, 11, 25), r.dateTime)
+    }
+
+    /** Una parola senza release dopo vale ancora; una sola lettera o due no (resta la forma a cifra). */
+    @Test
+    fun `stato testuale ai bordi`() {
+        val bare = ResponseParser.parseStatus(p("025757330s0000000000" + "1208261754" + "OPERATIVE"))
+        assertEquals("OPERATIVE", bare.statusWord)
+        assertEquals("", bare.softwareRelease)
+
+        val short = ResponseParser.parseStatus(p("025757330s0000000000" + "1208261754" + "OK1.0"))
+        assertNull(short.statusWord)
+        assertEquals("K1.0", short.softwareRelease)
     }
 
     /** A§9.5 totals. */

@@ -40,7 +40,7 @@ enum class WarningCode {
     DRAIN_INTERRUPTED,      // caduta, errore o limite raggiunto durante il drain (esito comunque valido)
     RX_OVERFLOW,            // RxBuffer pieno: byte scartati
     PROGRESS_LENGTH,        // progress con lunghezza diversa da 20
-    RECEIPT_END_MISSING,    // drain chiuso senza sentinella pur attendendo uno scontrino
+    RECEIPT_END_MISSING,    // drain chiuso senza la riga S finale (ESC in coda) pur attendendo uno scontrino
 }
 
 /**
@@ -71,7 +71,7 @@ sealed interface ProtocolEvent {
     class Wire(override val seq: Long, override val at: Long, val exchangeId: Long?, val direction: FrameDirection,
         val kind: FrameKind, val code: Char?, val bytes: ByteArray, val attempt: Int?, val lrcNote: String?) : ProtocolEvent
 
-    /** bytes già passati da PanMasker.maskDigitRuns (un frammento di esito può contenere il PAN, M9). */
+    /** bytes già passati da PanMasker.maskFragment (un frammento di esito può contenere il PAN, M9). */
     class Discarded(override val seq: Long, override val at: Long, val exchangeId: Long?, val bytes: ByteArray,
         val reason: DiscardReason) : ProtocolEvent
 

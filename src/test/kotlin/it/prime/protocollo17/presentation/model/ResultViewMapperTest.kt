@@ -68,6 +68,16 @@ class ResultViewMapperTest {
         assertTrue(status.detail!!.contains("V1.2.3"), status.detail)
     }
 
+    /** Forma testuale Ingenico 2025: prima il titolo era "STATO: sconosciuto (non è una cifra)". */
+    @Test
+    fun `stato s testuale OPERATIVE e' operativo`() {
+        val textual = UiFixtures.status(2).copy(statusDigit = -1, statusWord = "OPERATIVE", softwareRelease = "01.00.14_B2807_2807")
+        val status = view(UiFixtures.answered(CommandCode.STATUS, textual))
+        assertEquals("STATO: Operativo (OPERATIVE)", status.headline)
+        assertTrue(status.detail!!.contains("01.00.14_B2807_2807"), status.detail)
+        assertEquals("sconosciuto (BUSY)", FieldLabels.statusText(textual.copy(statusWord = "BUSY")))
+    }
+
     @Test
     fun `solo ACK e ristampa verso ECR con le righe ricevute`() {
         val ack = view(CommandOutcome.Acknowledged(CommandCode.ECR_PRINTING, UiFixtures.trace(CommandCode.ECR_PRINTING)))
@@ -146,6 +156,8 @@ class ResultViewMapperTest {
     @Test
     fun `valori leggibili dei campi`() {
         assertEquals("Contactless chip (CLI)", FieldLabels.value(FieldId.ENTRY_MODE, "CLI"))
+        assertEquals("Contactless (CLE)", FieldLabels.value(FieldId.ENTRY_MODE, "CLE"))
+        assertEquals("Operativo (OPERATIVE)", FieldLabels.value(FieldId.STATUS, "OPERATIVE"))
         assertEquals("Credito (2)", FieldLabels.value(FieldId.CARD_TYPE, "2"))
         assertEquals("giorno 077 · 09:47", FieldLabels.value(FieldId.HOST_DATE_TIME, "0770947"))
         assertEquals("1,2345 (00012345)", FieldLabels.value(FieldId.DCC_RATE, "00012345"))

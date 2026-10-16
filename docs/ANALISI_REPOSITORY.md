@@ -342,7 +342,7 @@ Ne segue che nessuna `LrcMode` dei repo, presa da sola, funziona con questo term
 | Rust in `noext` | L'LRC dei frame di controllo tornerebbe, ma quello dei frame applicativi sarebbe sbagliato e il terminale li NAKerebbe. |
 | C++ | Funziona per caso: lo splitter accetta qualsiasi 3 byte che iniziano con `06`/`15` (rn: `package/cpp/Session/Ecr17Session.cpp:41-48`). I suoi ACK uscirebbero comunque come `06 03 78`. |
 
-**Regola per Kotlin** (da nexi + wpf; il NAK `15 03 69` è derivato e mai osservato):
+**Regola per Kotlin** (da nexi + wpf; il NAK `15 03 69` è derivato, mai osservato sul DESK3200 ma visto da un altro terminale Ingenico, §9.11):
 
 - `appLrcMode = STX`;
 - LRC di controllo **separato**: `controlLrc = 0x7F ^ ctrl ^ ETX`, quindi ACK `06 03 7A` e NAK `15 03 69`;
@@ -825,6 +825,8 @@ Fonti: rust: `response.rs:242-255`; rn: `Ecr17Response.cpp:84-92`; nexi: `termin
 
 Se i parametri ECR del terminale non sono configurati, il terminale **non risponde affatto** a `s`.
 
+Terminali Ingenico reali del 2025 usano un'altra forma: alla pos 31 la parola `OPERATIVE`, seguita subito dalla release (§9.11).
+
 #### 4.5.7 `T` totali (34 B) e `C` chiusura (44 B)
 Fonti: rust: `response.rs:257-284`; nexi: `terminal-totals`, `close-session`.
 
@@ -870,7 +872,7 @@ Differenza nell'estrazione dei valori XML: Rust applica `.trim()`, che toglie tu
 | 10 | 1 | `'S'` |
 | 11 | 1..200 | testo; `0x7D` = a capo + reset, `0x7F` = doppia altezza grassetto |
 
-- **Fine scontrino**: l'ultimo `S` termina con sei `0x7D` seguiti da `0x1B` (nexi: `send-ticket`).
+- **Fine scontrino**: l'ultimo `S` termina con sei `0x7D` seguiti da `0x1B` (nexi: `send-ticket`). Sui terminali Ingenico reali (§9.11) l'ultima riga finisce solo con `0x1B` (preceduto da `}}` o da spazi), e nel formato a righe da 24 colonne lo `0x7E` sostituisce il separatore `0x7D` della riga in doppia altezza (a capo + doppia altezza).
 - Ogni `S` va ACKato.
 - La spec non dice se le righe arrivano prima o dopo l'esito. La documentazione RN dice "dopo l'esito su alcuni terminali" (rn: `docs-site/docs/operations/troubleshooting.md:23-25`).
 - I repo classificano un messaggio come ricevuta con `payload[9]=='S'` (lunghezza ≥ 10) e passano al callback **l'intero payload, intestazione compresa** (es. `"123456780SLINE 1"`).
@@ -1718,7 +1720,7 @@ Questa sezione raccoglie, così come sono, i vettori presenti nei test dei repos
 | stx | `06 03 78` | `15 03 6B` |
 | noext | `06 03 7A` | `15 03 69` |
 | stx_noext | `06 03 7B` | `15 03 68` |
-| **Ingenico reale (wire XOR `7F^ctrl^03`)** | **`06 03 7A`** (osservato) | `15 03 69` (atteso, mai osservato) |
+| **Ingenico reale (wire XOR `7F^ctrl^03`)** | **`06 03 7A`** (osservato) | `15 03 69` (atteso; visto da un altro Ingenico, §9.11) |
 
 Test dei repo: `encode_control(ACK)` in Std produce 3 byte, `[0]=06`, `[1]=03` (rust: `codec.rs:212-219`; rn: `test_packet_codec.cpp:55-61`).
 
@@ -1973,6 +1975,34 @@ Vettori derivati in `stx` con TID `00000000`, utili per il terminale reale:
 | euro → centesimi | `"6.50"`; `"0"`, `"-5"`, `"0.004"`, `"1"` | `650`; disabilitato ×3; abilitato | rust: `CommandParamsSheet.test.tsx:26-67` |
 | guardia host | host vuoto + Connect | log error `connect failed` / `Host is empty — enter the POS IP address first` | rust: `app/e2e/panel.spec.ts:46-50` |
 
+### 9.11 Catture reali del progetto PosMock (log DLL IAE37, altri terminali Ingenico)
+
+Aggiunta del 2026-10-16. Il progetto PosMock (`D:\Programmazione\Prime\PerClaude\PosMock`, app Android che finge di essere un POS) conserva in `doc/campioni` tre log reali della DLL IAE37, copiati perché la DLL li cancella a mezzanotte. Riferimenti come `file:riga`:
+
+| File | Terminale | Contenuto |
+|---|---|---|
+| `iaedll-pagamenti-20250708.txt` | TID `10002912`, build `01.00.14_B2807_2807` | `t` rifiutati con NAK, `D`, P e X con testo scontrino, esiti 71/74/92 B, `E1` + X con righe `S`, `s` |
+| `iaedll-annulli-20250723.txt` | TID `10002001`, build `01.00.14_B2827_2827` | rifiuti `ABORTED_MANUALLY` e `CARD_SEARCH_TIMEOUT`, `s`, NAK di polling della DLL |
+| `iaedll-status-20260812.txt` | TID `02575733` (il DESK3200 dell'utente) | `t` e risposta da 225 B |
+
+Ogni frame applicativo, in entrambe le direzioni, torna **solo** in `stx`, come in §9.8. I vettori sono in `IngenicoCaptureTest` (sezione "Catture PosMock").
+
+Cosa cambia rispetto a §4.5 e §9.8:
+
+1. **`s` testuale.** Risposta da 58 B: `<TID>0s` + `0000000000` + `DDMMYYhhmm` + `OPERATIVE` + release, `01.00.14_B2807_2807` (pagamenti:100) e `01.00.14_B2827_2827` (annulli:17). Alla pos 31 c'è una parola, non la cifra di §4.5.6, e la release parte dopo la parola. Il parser riconosce le due forme (DESIGN §3.14). La forma del DESK3200 non è ancora nota. (`01.00.14_B2778_2778`, citata nel codice di PosMock, è la costante del suo simulatore, non una cattura.)
+2. **Fine scontrino.** Le righe `S` intermedie sono da 210 B (10 di intestazione + 200 di testo) e non finiscono mai con `0x1B`. L'ultima finisce con `}}` + `0x1B` (pagamenti:126, 146, 166) oppure con sei blocchi `}` + 24 spazi + `0x1B` (pagamenti:95). La coda `7D×6 1B` di §4.5.9 (spec Nexi) non compare mai: la fine è l'ESC finale.
+3. **Due formati di scontrino, stesso terminale e stesso giorno.** Formato A (pagamenti:83-95): righe da 24 colonne, ognuna preceduta da `0x7D`; la riga in doppia altezza è preceduta da `0x7E` **al posto** del `0x7D` (`~        PAGAMENTO`, `~IMPORTO EUR`), quindi `0x7E` = a capo + doppia altezza. Formato B (pagamenti:117-126): colonne da 24 senza separatori, `0x7F` è un byte **in più** sul bordo di una colonna (offset 48, 600, 624) e non sostituisce nulla. Nel formato B la DLL taglia il flusso in frame da 200 caratteri anche in mezzo a un campo (`Data 08` | `/07/25`, AID `A0000` | `000031010`).
+4. **Entry mode `CLE`** accanto a `CLI` (pagamenti:28, 46, 80).
+5. **X da 92 B** (pagamenti:46, 80, 114, 134, 154): action code `000` in 72/3, importo host in 75/8 uguale all'importo richiesto (`00000005`), zeri in 83-92. Conferma il layout `EXTENDED_92`.
+6. **P da 74 B** (pagamenti:106): i 71 B consueti più `000` in coda; altrove il P risponde con 71 B (pagamenti:28).
+7. **Richieste della DLL**: P e X da 167 B con il testo scontrino allineato a destra in 32-159 (pagamenti:10, 31), `E1` = `000000000E1` con LRC `3A`, `s` = `000000000s` con LRC `3D`. Il nostro encoder le riproduce byte per byte. `E1` arriva solo prima delle X con stampa su ECR (pagamenti:49, 109, 129, 149, ognuna seguita da righe `S`); la X di pagamenti:31 e il P di pagamenti:10 partono senza `E1` e non ricevono righe `S`. Non persistente: il P di pagamenti:103, che segue E1 + X + `s`, non ha `E1` e non riceve righe `S`.
+8. **Ordine con la stampa su ECR**: dopo `E1` + X le righe `S` arrivano **dopo** l'esito `E`, e la DLL ACKa ognuna: la prima da 6 a 120 ms circa dopo l'ACK dell'esito, poi una ogni 130-200 ms; il primo scontrino è completo in circa 0,8 s (pagamenti:80-95), gli altri in 40-120 ms dall'esito.
+9. **Rifiuti locali in inglese**: `ABORTED_MANUALLY` (tipo carta `2`, acquirer di spazi, STAN `000005`, online `000034`, annulli:5) e `CARD_SEARCH_TIMEOUT` (tipo carta `0`, STAN `000000`, online di spazi, annulli:26). Il DESK3200 invece manda testi italiani (§9.8: `OPERAZIONE ANNULLATA`, `CARTA NON VALIDA`, `CARTA SCONOSCIUTA`).
+10. **Tempi**: il `CARD_SEARCH_TIMEOUT` arriva **128,7 s** dopo il P (annulli:20-26): ACK a +114 ms, progress `ATTESA CARTA`, 120 s di silenzio, NAK `15 03 69` di polling della DLL, il terminale ripete il progress, l'esito arriva 6,4 s dopo. La DLL manda NAK di polling anche ogni 30 s mentre aspetta (annulli:33-38).
+11. **NAK reale dal terminale**: `15 03 69` in risposta a un `t` (pagamenti:2, 4), la forma che DESIGN §9.2 punto 6 si aspetta. Il `t` aveva un LRC `stx` valido (`3A`): quel NAK vuol dire "comando non gestito", non "LRC sbagliato".
+12. **`t` è lo `StatoPos` della DLL** (§10.3): risposta da 225 B del DESK3200 con modello `P/NDESK3200EM4`, seriale `182592207401594`, IP `192168001106` e gateway `192168001001`. Il 12/08/2026 il terminale era quindi su `192.168.1.106`, non sul `.131` di §10.5.
+13. **PAN sullo scontrino**: le righe `S` riportano il PAN troncato con il BIN in chiaro (`438746******9993`, `518619******1017`, `679999*********3224`: pagamenti:120, 140, 160), mentre l'esito `E` lo porta come `000************9993` o `000438746******9993`. La rete di sicurezza di M9 conta quindi anche le `*` nelle sequenze (DESIGN §3.8). Tagliato tra due frame (punto 3), un PAN, in chiaro o troncato con il BIN, sfuggirebbe al mascheramento per frame: nelle catture la riga del PAN non cade mai su un taglio, ma il limite resta (DESIGN §3.8).
+
 ---
 
 ## 10. Mappatura con l'app WPF/DLL esistente
@@ -2069,7 +2099,7 @@ Firma comune: `int f(ref TECRData, ref TPOSData)`, StdCall/Ansi; restituisce un 
 | (non usata) | `IAE37AX_SetDebugPath` | `debug` (non usato) | — | in Kotlin: log hex del wire |
 | (non chiamabile) | **`IAE37AX_SetTimeout` non esportata** (esiste solo `IAE37_SetTimeout`) | `ack_timeout_ms`/`response_timeout_ms` | — | la DLL ha sempre girato con il suo timeout interno, di valore ignoto |
 | Payment | `IAE37AX_Payment` | `pay()` `:138` | `P` (167) → `E`/`V` | ✓ verificato byte per byte |
-| Payment Ext | `IAE37AX_PaymentExt` | `pay_extended()` `:148` | `X` → `E` 92 B | non catturato |
+| Payment Ext | `IAE37AX_PaymentExt` | `pay_extended()` `:148` | `X` → `E` 92 B | non catturato sul DESK3200; catturato su un altro Ingenico (§9.11) |
 | Refund | `IAE37AX_Refund` | **nessuno** | ? | assente nei repo e nelle pagine pubbliche |
 | Refund Ext | `IAE37AX_RefundExt` | **nessuno** | ? | |
 | Void (Storno) | `IAE37AX_Void` | `reverse()` `:158` | `S` (26) → `E` 84 B | il WPF invia anche Amount nella struct; lo storno ECR17 non ha campo importo |
@@ -2078,7 +2108,7 @@ Firma comune: `int f(ref TECRData, ref TPOSData)`, StdCall/Ansi; restituisce un 
 | Preauth Integrazione | `IAE37AX_PreauthorizationInt` | `incremental_auth()` `:188` | `i` → `i` 75 B | parser dei repo errato (§4.5.4) |
 | Preauth Chiusura | `IAE37AX_PreauthorizationClose` | `pre_auth_closure()` `:206` | `c` → `c`/`v` | |
 | Status | `IAE37AX_Status` | `status()` `:130` | `s` | |
-| Stato POS | `IAE37AX_StatoPos` | **ambiguo** (forse `s`, forse un altro messaggio) | ? | esistono anche `StatoPosEvolutoA/B` |
+| Stato POS | `IAE37AX_StatoPos` | **nessuno** | `t` → `t` 225 B (cattura del DESK3200 nei campioni PosMock, §9.11) | prima era ambiguo; esistono anche `StatoPosEvolutoA/B` |
 | Chiusura | `IAE37AX_Closure` | `close_session()` `:242` | `C` → `C` 44 B | |
 | Terminal Balance | `IAE37AX_TerminalBalance` | `totals()` `:254` | `T` → `T` 34 B | |
 | Ristampa | `IAE37AX_Reprint` | `reprint(to_ecr)` `:285` | `R` (ACK-only) | Rust fissa il tipo ticket a `'0'`, mentre il WPF permette `0`/`1` |
@@ -2386,7 +2416,7 @@ class Ecr17Session(transport, codec, cfg: SessionConfig, wireLog: WireLogger, ev
    - `S` → evento `ReceiptLine`, testo dopo l'intestazione con `0x7D` → newline;
    - **codice inatteso** → orfano;
    - esito → drain.
-5. **Drain.** Best effort: si ferma su timeout o errore, oppure sulla sentinella `0x7D`×6+`0x1B`. Gestisce `K` multi-messaggio (finché il flag in pos 15 vale `'1'`) e `U` dal GT.
+5. **Drain.** Best effort: si ferma su timeout o errore, oppure sulla sentinella `0x7D`×6+`0x1B` (sui terminali Ingenico reali basta l'ESC finale, §9.11). Gestisce `K` multi-messaggio (finché il flag in pos 15 vale `'1'`) e `U` dal GT.
 6. **Annullamento.** Se la coroutine viene annullata, si chiude il socket; il chiamante riceve `Cancelled(afterAck = true|false)`.
 
 **Client**
@@ -2553,13 +2583,13 @@ Altri file in `%APPDATA%`: `journal.jsonl` per i tentativi finanziari, `logs/ecr
 | R1 | LRC di controllo errato: gli ACK vengono scartati e i pagamenti ritrasmessi (possibile **doppio addebito** se il terminale non deduplica) | alta sul terminale dell'utente con una configurazione ingenua / alto | `ControlLrc` separato (default `WIRE_BYTES` sul profilo Ingenico), splitter tollerante, `IMPLICIT_GO_AHEAD` per i comandi finanziari, prima prova sempre con `s` |
 | R2 | Esito tardivo o stantio attribuito al comando sbagliato | media / alto | modalità PER_COMMAND, orfani loggati, verifica del codice atteso, journal, `G` |
 | R3 | Timeout di 60 s troppo corto (osservati 48,6 s) | media / alto (falso errore su un pagamento approvato) | default **120 000 ms** (da confermare), recupero guidato con `G` |
-| R4 | Layout di risposta non verificati sul campo (`i`, `c`/`v`, X-92, S-84, H-KO, K multi, `U` dal GT) | media / medio | parser dedicati e conservazione del payload grezzo; catturare le tracce reali con il log hex; verifica umana sulla spec |
+| R4 | Layout di risposta non verificati sul campo (`i`, `c`/`v`, S-84, H-KO, K multi, `U` dal GT; X-92 visto su un altro Ingenico, §9.11) | media / medio | parser dedicati e conservazione del payload grezzo; catturare le tracce reali con il log hex; verifica umana sulla spec |
 | R5 | Charset: testo non ASCII sposta i campi | bassa / alto | ASCII in uscita (rifiuto o traslitterazione), `ISO_8859_1` in ingresso |
-| R6 | Funzioni presenti solo nella DLL (Refund, RefundExt, VoidR, LetturaCarta, StatoPos, tipi 6/7/8) senza codici noti | certa / medio | non implementarle "a intuito"; catturare i frame usando l'app WPF con il log DLL attivo |
+| R6 | Funzioni presenti solo nella DLL (Refund, RefundExt, VoidR, LetturaCarta, tipi 6/7/8) senza codici noti; StatoPos è `t` (§9.11) | certa / medio | non implementarle "a intuito"; catturare i frame usando l'app WPF con il log DLL attivo |
 | R7 | Seriale RS-232 richiesta | ignota / medio | interfaccia `Ecr17Transport` già astratta; aggiungere jSerialComm se necessario |
 | R8 | Insidie di Compose Desktop: lazy dentro scroll, `Dispatchers.Main` mancante, emoji non renderizzate, AWT dialog | media / basso | seguire le skill `compose-desktop-*` e usare icone Material invece degli emoji |
 | R9 | Licenze: rust MIT; rn **ambigua** (Apache-2.0 nel file `LICENSE`, MIT in `package.json`) | — | reimplementare citando le fonti; se si copiano porzioni sostanziali, includere la notice MIT ed eventualmente chiarire la licenza rn con l'autore |
-| R10 | Un solo terminale di prova; NAK mai osservato. Sull'Ingenico sono stati catturati soltanto `P` e `R`: `s`, `E`, `G`, `C`, `T`, `S`, `p`, `i`, `c`, `H` non sono mai stati osservati sul filo | certa / medio | piano di collaudo con log hex prima del rilascio |
+| R10 | Un solo terminale di prova; NAK mai osservato sul DESK3200. Sul DESK3200 sono stati catturati soltanto `P` e `R` (più la risposta `t`, §9.11): `s`, `E`, `G`, `C`, `T`, `S`, `p`, `i`, `c`, `H` non sono mai stati osservati sul suo filo. Su altri due Ingenico (§9.11) si sono visti `s`, `X`, `E1`, righe `S` e il NAK | certa / medio | piano di collaudo con log hex prima del rilascio |
 
 ---
 

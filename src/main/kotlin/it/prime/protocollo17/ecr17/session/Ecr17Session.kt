@@ -455,14 +455,15 @@ internal class Ecr17Session(
 
         /**
          * Raccoglie quello che il terminale invia dopo l'esito (righe S, esito ritrasmesso, orfani) finché c'è
-         * silenzio, la sentinella dello scontrino o il tetto. Best effort: non trasforma mai l'esito in errore (M5).
+         * silenzio, la riga finale dello scontrino (`isEnd`, ESC in coda) o il tetto. Best effort: non trasforma mai
+         * l'esito in errore (M5).
          */
         private suspend fun drain(resultFrame: WireFrame.Application?) {
             enter(ExchangePhase.DRAINING)
             val window = options.drainWindowMs(spec.expectReceipt)
             val capMs = maxOf(DRAIN_MIN_CAP_MS, DRAIN_CAP_WINDOWS * window)
             val capDeadline = timeSource.markNow() + capMs.milliseconds
-            // Solo una sentinella vista DURANTE il drain lo chiude (§3.21 punto 5). Prima si partiva da
+            // Solo una riga finale vista DURANTE il drain lo chiude (§3.21 punto 5). Prima si partiva da
             // receiptEndSeen: con le righe S arrivate prima dell'esito (stampa su ECR, A§5.5) il drain era saltato
             // e un esito ritrasmesso o le righe di una seconda copia restavano senza ACK.
             var endSeen = false
@@ -497,13 +498,13 @@ internal class Ecr17Session(
             } catch (e: Exception) {
                 drainInterrupted("errore durante il drain: ${e.message ?: e::class.simpleName}")
             }
-            // La sentinella può essere arrivata prima dell'esito: in quel caso lo scontrino è completo.
+            // La riga finale può essere arrivata prima dell'esito: in quel caso lo scontrino è completo.
             if (spec.expectReceipt && !endSeen && !receiptEndSeen) {
                 trace.warning(WarningCode.RECEIPT_END_MISSING, "drain chiuso senza la riga di fine scontrino")
             }
         }
 
-        /** true se è arrivata la sentinella di fine scontrino. */
+        /** true se è arrivata la riga finale dello scontrino (`isEnd`, §3.14). */
         private suspend fun onDrainItem(item: SplitItem, resultFrame: WireFrame.Application?): Boolean {
             val frame = (item as? SplitItem.Parsed)?.frame ?: return false   // AMBIGUOUS_NAK: warning già emesso
             return when (frame) {
@@ -722,7 +723,7 @@ internal class Ecr17Session(
         private fun report(item: SplitItem) {
             when (item) {
                 is SplitItem.Discarded -> {
-                    val masked = PanMasker.maskDigitRuns(item.bytes)
+                    val masked = PanMasker.maskFragment(item.bytes)
                     emitter.emit { seq, at -> ProtocolEvent.Discarded(seq, at, spec.exchangeId, masked, item.reason) }
                     if (item.reason == DiscardReason.AMBIGUOUS_NAK) {
                         trace.warning(
@@ -754,7 +755,7 @@ internal class Ecr17Session(
         private fun logResidue(source: FrameSplitter) {
             val residue = source.clear()
             if (residue.isEmpty()) return
-            val masked = PanMasker.maskDigitRuns(residue)
+            val masked = PanMasker.maskFragment(residue)
             emitter.emit { seq, at -> ProtocolEvent.Discarded(seq, at, spec.exchangeId, masked, DiscardReason.NOISE) }
         }
 

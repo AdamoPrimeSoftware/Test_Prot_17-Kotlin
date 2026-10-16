@@ -3,11 +3,14 @@ package it.prime.protocollo17.ecr17.wire
 /**
  * Mascheramento del PAN (A§11 punto 17, invariante M9).
  *
- * Dove si applica: `ProtocolEvent.Wire` RX ⇒ [maskFrame]; `ProtocolEvent.Discarded` ⇒ [maskDigitRuns];
- * righe S con `maskPan = true` ⇒ [maskDigitRuns] su raw e text; `SimEvent.FrameOut` ⇒ [maskFrame].
+ * Dove si applica: `ProtocolEvent.Wire` RX ⇒ [maskFrame]; `ProtocolEvent.Discarded` ⇒ [maskFragment];
+ * righe S con `maskPan = true` ⇒ [maskDigitRuns] su raw e corpo; `SimEvent.FrameOut` ⇒ [maskFrame].
  *
  * In tutta la rete di sicurezza lo 0x7F (doppia altezza delle righe S) è trasparente: il terminale può inserirlo in
- * mezzo al PAN, e `41111111<7F>11111111` non deve contare come due sequenze da 8 cifre, sotto la soglia.
+ * mezzo al PAN, e `41111111<7F>11111111` non deve contare come due sequenze da 8 cifre, sotto la soglia. Lo 0x7E invece
+ * no, come lo 0x7D: nel formato a righe da 24 colonne dei terminali Ingenico del 2025 è il separatore della riga in
+ * doppia altezza, e un PAN non scavalca mai una riga. Trattarlo come trasparente univa righe vicine e mascherava STAN
+ * e acquirer, o spostava le "ultime 4" del PAN su cifre della riga dopo.
  *
  * Perché due strategie: sugli esiti la posizione del PAN è nota (pos 13, len 19) e mascherare solo lì lascia
  * leggibili acquirer, STAN e online id, che sono proprio le sequenze di cifre lunghe da confrontare con lo
@@ -75,8 +78,9 @@ object PanMasker {
      *   0x7F trasparente);
      * - s, T, C: copia identica (nessun PAN; contengono lunghe sequenze di cifre che NON vanno toccate).
      *
-     * Un payload troncato maschera la parte del campo PAN che c'è; un esito mancante (payload < 12 byte) conta
-     * come "diverso da 01", perché nel dubbio si maschera.
+     * Un payload troncato maschera TUTTE le cifre della parte del campo PAN che c'è: le ultime 4 del pezzo non sono le
+     * ultime 4 del PAN, e prima un frammento come `…E0000438746123` lasciava in chiaro cifre centrali. Un esito mancante
+     * (payload < 12 byte) conta come "diverso da 01", perché nel dubbio si maschera.
      *
      * "Dalla pos 11" in pratica: le sequenze si contano su TUTTO il payload. Con un'intestazione ben formata il
      * risultato è identico, perché il codice in pos 10 non è una cifra e interrompe la sequenza, e TID + '0'
@@ -121,9 +125,26 @@ object PanMasker {
     }
 
     /**
-     * Rete di sicurezza senza posizioni: ogni sequenza di ≥ 13 cifre ASCII consecutive diventa '*' tranne le
-     * ultime 4. Per byte scartati (ProtocolEvent.Discarded), testo delle righe S, byte non applicativi del
-     * log del simulatore. Può mascherare anche STAN/online in un frammento scartato: accettato.
+     * Byte scartati dallo splitter o rimasti a fine scambio (ProtocolEvent.Discarded): un frammento che inizia con
+     * STX è un frame troncato e passa da [maskFrame] (posizionale: PAN in 13/19 mascherato, esito, STAN e online id
+     * leggibili), il resto da [maskDigitRuns].
+     *
+     * Prima ogni frammento passava dalla rete di sicurezza. Con le '*' nelle sequenze, un esito approvato troncato
+     * (`<STX>100029120E00000************1017CLE…`) perdeva anche l'esito "00", che è proprio la prova da leggere per
+     * risolvere un esito sconosciuto (M6); e un PAN tagliato dopo il BIN (11 cifre) restava in chiaro.
+     */
+    fun maskFragment(bytes: ByteArray): ByteArray =
+        if (bytes.isNotEmpty() && (bytes[0].toInt() and 0xFF) == ControlChars.STX) maskFrame(bytes) else maskDigitRuns(bytes)
+
+    /**
+     * Rete di sicurezza senza posizioni: ogni sequenza di ≥ 13 caratteri fatta di cifre ASCII e '*' (con almeno una
+     * cifra) diventa '*' tranne le ultime 4 cifre. Per byte scartati (ProtocolEvent.Discarded), testo delle righe S,
+     * byte non applicativi del log del simulatore. Può mascherare anche STAN/online in un frammento scartato: accettato.
+     *
+     * Le '*' contano perché i terminali Ingenico stampano sullo scontrino il PAN già troncato, con il BIN in chiaro
+     * (`438746******9993`, catture PosMock): prima si contavano solo le cifre, quel BIN restava in chiaro nelle righe S
+     * e nel log traffico, mentre sull'esito 'E' lo stesso PAN usciva come `***************9993`. Una sequenza di sole
+     * '*' non ha cifre da mascherare e resta com'è.
      *
      * Lo 0x7F è trasparente: le sequenze si contano come se non ci fosse e resta al suo posto. Prima solo il ramo S
      * di [maskApplicationPayload] lo saltava, e un frammento scartato di una riga S con `41111111<7F>11111111`
@@ -140,8 +161,9 @@ object PanMasker {
         maskRunsSkippingDouble(
             size = chars.size,
             from = 0,
-            isDouble = { chars[it].code == ControlChars.RECEIPT_DOUBLE },
+            isDouble = { isReceiptFormat(chars[it].code) },
             isDigit = { chars[it].isAsciiDigit() },
+            isMask = { chars[it] == MASK },
             mask = { chars[it] = MASK },
         )
         return String(chars)
@@ -154,17 +176,27 @@ object PanMasker {
 
     private fun isAsciiDigit(b: Byte): Boolean = (b.toInt() and 0xFF) in DIGIT_0..DIGIT_9
 
+    /** Byte di formato trasparente nel conteggio delle cifre: solo lo 0x7F (0x7E separa le righe, vedi sopra). */
+    private fun isReceiptFormat(code: Int): Boolean = code == ControlChars.RECEIPT_DOUBLE
+
     /** Esito "01" in pos 11-12 = ramo KO: lì in pos 13 c'è la descrizione dell'errore, non il PAN. */
     private fun isKo(payload: ByteArray): Boolean =
         payload.size >= RESULT_OFFSET + 2 &&
             (payload[RESULT_OFFSET].toInt() and 0xFF) == '0'.code &&
             (payload[RESULT_OFFSET + 1].toInt() and 0xFF) == '1'.code
 
-    /** maskFixedWidth sul campo PAN (pos 13 len 19), sulla parte presente se il payload è troncato. */
+    /**
+     * maskFixedWidth sul campo PAN (pos 13 len 19). Se il payload è troncato dentro il campo, tutte le cifre presenti:
+     * le ultime 4 del pezzo non sono quelle del PAN.
+     */
     private fun maskPanField(payload: ByteArray) {
         val from = PAN_OFFSET
         val to = minOf(payload.size, PAN_OFFSET + PAN_LENGTH)
         if (from >= to) return
+        if (to < PAN_OFFSET + PAN_LENGTH) {
+            for (i in from until to) if (isAsciiDigit(payload[i])) payload[i] = MASK_BYTE
+            return
+        }
         maskDigitsExceptLast(
             size = to - from,
             isDigit = { isAsciiDigit(payload[from + it]) },
@@ -176,29 +208,35 @@ object PanMasker {
         maskRunsSkippingDouble(
             size = bytes.size,
             from = from,
-            isDouble = { (bytes[it].toInt() and 0xFF) == ControlChars.RECEIPT_DOUBLE },
+            isDouble = { isReceiptFormat(bytes[it].toInt() and 0xFF) },
             isDigit = { isAsciiDigit(bytes[it]) },
+            isMask = { bytes[it] == MASK_BYTE },
             mask = { bytes[it] = MASK_BYTE },
         )
     }
 
     /**
-     * Sequenze di ≥ [MIN_PAN_RUN] cifre da [from] in poi, con lo 0x7F ([isDouble]) trasparente: si contano sulla
-     * proiezione senza 0x7F (indici in `kept`) e le cifre mascherate restano al loro posto. Lunghezza e posizione
-     * degli 0x7F restano quelle del filo.
+     * Sequenze di ≥ [MIN_PAN_RUN] caratteri tra cifre e '*' da [from] in poi, con i byte di formato ([isDouble])
+     * trasparenti: si contano sulla proiezione senza di loro (indici in `kept`) e in ogni sequenza si mascherano tutte
+     * le cifre tranne le ultime 4. Lunghezza e posizione dei byte di formato restano quelle del filo.
      */
     private inline fun maskRunsSkippingDouble(
         size: Int,
         from: Int,
         isDouble: (Int) -> Boolean,
         isDigit: (Int) -> Boolean,
+        isMask: (Int) -> Boolean,
         mask: (Int) -> Unit,
     ) {
         val kept = IntArray((size - from).coerceAtLeast(0))
         var count = 0
         for (i in from until size) if (!isDouble(i)) kept[count++] = i
-        forEachDigitRun(size = count, from = 0, isDigit = { isDigit(kept[it]) }) { runStart, runEnd ->
-            for (k in runStart until runEnd - VISIBLE_DIGITS) mask(kept[k])
+        forEachPanRun(size = count, isPanChar = { isDigit(kept[it]) || isMask(kept[it]) }) { runStart, runEnd ->
+            maskDigitsExceptLast(
+                size = runEnd - runStart,
+                isDigit = { isDigit(kept[runStart + it]) },
+                mask = { mask(kept[runStart + it]) },
+            )
         }
     }
 
@@ -217,16 +255,16 @@ object PanMasker {
         }
     }
 
-    /** Chiama [onRun] per ogni sequenza [runStart, runEnd) di almeno [MIN_PAN_RUN] cifre, a partire da [from]. */
-    private inline fun forEachDigitRun(size: Int, from: Int, isDigit: (Int) -> Boolean, onRun: (Int, Int) -> Unit) {
-        var i = from
+    /** Chiama [onRun] per ogni sequenza [runStart, runEnd) di almeno [MIN_PAN_RUN] caratteri [isPanChar]. */
+    private inline fun forEachPanRun(size: Int, isPanChar: (Int) -> Boolean, onRun: (Int, Int) -> Unit) {
+        var i = 0
         while (i < size) {
-            if (!isDigit(i)) {
+            if (!isPanChar(i)) {
                 i++
                 continue
             }
             val runStart = i
-            while (i < size && isDigit(i)) i++
+            while (i < size && isPanChar(i)) i++
             if (i - runStart >= MIN_PAN_RUN) onRun(runStart, i)
         }
     }

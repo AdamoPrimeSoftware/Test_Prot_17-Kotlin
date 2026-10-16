@@ -25,9 +25,12 @@ enum class Verdict {
     }
 }
 
-/** Modalità di lettura della carta (pos 32/3 delle risposte di transazione). */
+/**
+ * Modalità di lettura della carta (pos 32/3 delle risposte di transazione). `CLE` viene dalle catture reali di terminali
+ * Ingenico del 2025 (progetto PosMock), accanto a `CLI`: contactless, ma la spec che abbiamo non lo distingue da `CLI`.
+ */
 enum class EntryMode(val wire: String) {
-    ICC("ICC"), MAG("MAG"), MANUAL("MAN"), CLESS_MAG("CLM"), CLESS_ICC("CLI");
+    ICC("ICC"), MAG("MAG"), MANUAL("MAN"), CLESS_MAG("CLM"), CLESS_ICC("CLI"), CLESS_CLE("CLE");
 
     companion object { fun fromWire(value: String): EntryMode? = entries.firstOrNull { it.wire == value.trimEnd() } }
 }
@@ -75,9 +78,9 @@ data class DccInfo(
 /** Riga di scontrino 'S' (A§4.5.9). */
 data class ReceiptLine(
     val raw: String,          // payload dalla pos 11, ISO-8859-1
-    val text: String,         // 0x7D → '\n', 0x7F rimosso, sentinella rimossa
+    val text: String,         // 0x7D e 0x7E → '\n', 0x7F rimosso, ESC finale e coda di a capo/spazi rimossi
     val doubleHeight: Boolean,
-    val isEnd: Boolean,       // terminava con 0x7D×6 + 0x1B
+    val isEnd: Boolean,       // l'ultimo byte era ESC (0x1B): ultima riga dello scontrino
 )
 
 // ─── Gerarchia delle risposte ────────────────────────────────────────────────────
@@ -175,13 +178,22 @@ data class PreAuthClosureResponse(
 
 // ─── Risposte di servizio ────────────────────────────────────────────────────────
 
-/** Risposta 's' allo stato terminale (A§4.5.6): data/ora del terminale, cifra di stato e release software. */
+/**
+ * Risposta 's' allo stato terminale (A§4.5.6): data/ora del terminale, stato e release software.
+ *
+ * Lo stato ha due forme, entrambe alla pos 31. Spec Nexi (A§9.9): una cifra (tabella 0..6) e la release dalla pos 32.
+ * Terminali Ingenico reali del 2025 (catture IAE37 del progetto PosMock, TID 10002912 e 10002001): una parola in
+ * maiuscolo, "OPERATIVE", seguita subito dalla release ("01.00.14_B2807_2807"). Prima il parser conosceva solo la
+ * cifra e su quei terminali mostrava "stato sconosciuto" con la release "PERATIVE01.00.14…"; ora la parola finisce in
+ * [statusWord].
+ */
 data class StatusResponse(
     override val raw: RawPayload, override val terminalId: String, override val replyCode: Char,
     override val fields: List<ResponseField>,
     val dateTimeRaw: String, val dateTime: LocalDateTime?,   // DDMMYYhhmm, anno 2000+YY, null se non valida
-    val statusDigit: Int,                                    // 0..9, -1 se non è una cifra
+    val statusDigit: Int,                                    // 0..9, -1 se non è una cifra (anche con statusWord)
     val softwareRelease: String,
+    val statusWord: String? = null,                          // forma testuale ("OPERATIVE"), null con la cifra
 ) : Ecr17Response
 
 /** Risposta 'T' ai totali (34 B, A§4.5.7): il totale POS c'è con qualsiasi esito, per questo non è nullable. */

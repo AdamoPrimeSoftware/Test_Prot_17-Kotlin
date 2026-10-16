@@ -699,7 +699,7 @@ class ConsoleViewModel(
         val outcome = run.outcome
         val response = (outcome as? CommandOutcome.Answered)?.response as? StatusResponse
         return if (response != null) {
-            val status = FieldLabels.statusText(response.statusDigit).replaceFirstChar { it.lowercase() }
+            val status = FieldLabels.statusText(response).replaceFirstChar { it.lowercase() }
             ConsoleEvent.ShowInfo("Terminale: $status in ${(run.finishedAt - run.startedAt).coerceAtLeast(0)} ms")
         } else {
             ConsoleEvent.ShowError("Stato terminale: " + (FailureMessages.forOutcome(outcome) ?: viewOf(run).headline))
