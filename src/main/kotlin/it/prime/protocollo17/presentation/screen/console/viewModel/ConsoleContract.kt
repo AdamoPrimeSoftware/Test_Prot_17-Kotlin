@@ -32,7 +32,10 @@ data class ConnectionView(
     val configUsable: Boolean = true,
     /** Issues, problemi e avvisi di configurazione già in italiano. */
     val configMessages: List<String> = emptyList(),
+    /** Test connessione in corso. */
     val testing: Boolean = false,
+    /** Connetti o Disconnetti in corso (solo PERSISTENT). */
+    val switching: Boolean = false,
 )
 
 data class SimulatorView(
@@ -86,14 +89,24 @@ data class ConsoleUiState(
     val simulator: SimulatorView = SimulatorView(),
 ) {
     val busy: Boolean get() = running != null
+
+    /**
+     * Test connessione, Connetti o Disconnetti in corso: tengono il lock del client come un comando. Prima i comandi
+     * restavano attivi e un pagamento lanciato in quel momento scriveva il tentativo nel journal e finiva subito
+     * `NotSent(Busy)`; ora si disabilitano come durante un comando (M7: mai accodati).
+     */
+    val linkBusy: Boolean get() = connection.testing || connection.switching
     val paymentsBlocked: Boolean get() = unresolved.any { it.blocksPayments }
     fun isBlocked(command: CommandCode): Boolean = command in blockedCommands
-    val canRunSelected: Boolean get() = !busy && !isBlocked(selected) && connection.configUsable
+    val canRunSelected: Boolean get() = !busy && !linkBusy && !isBlocked(selected) && connection.configUsable
     val canCancel: Boolean get() = running?.cancelRequested == false
-    val canRecoverWithG: Boolean get() = !busy && unresolved.isNotEmpty() && connection.configUsable
+    val canRecoverWithG: Boolean get() = !busy && !linkBusy && unresolved.isNotEmpty() && connection.configUsable
 
-    /** Azioni della barra (Stato, Test connessione, Connetti/Disconnetti) e del menu Strumenti: disabilitate durante un comando. */
-    val barActionsEnabled: Boolean get() = !busy
+    /**
+     * Azioni della barra (Stato, Test connessione, Connetti/Disconnetti) e del menu Strumenti: disabilitate durante
+     * un comando e durante un'operazione di collegamento.
+     */
+    val barActionsEnabled: Boolean get() = !busy && !linkBusy
 
     /** Esc annulla il comando solo se nessun dialog è aperto (con un dialog aperto Esc chiude il dialog e basta). */
     val escapeCancels: Boolean get() = canCancel && dialog == null
