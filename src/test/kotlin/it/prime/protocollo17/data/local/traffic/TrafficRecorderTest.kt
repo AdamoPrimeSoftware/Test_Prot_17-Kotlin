@@ -208,7 +208,7 @@ class TrafficRecorderTest {
 
     /**
      * M9: nessun PAN in chiaro nel file, né nei frame, né negli scarti, né nelle righe S. Gli eventi sono costruiti
-     * come li costruisce la sessione (maskFrame, maskDigitRuns, parser con maskPan): gira dopo il merge di WP1 e WP2.
+     * come li costruisce la sessione (maskFrame, maskDigitRuns, parser con maskPan).
      */
     @Test
     fun `nessun PAN in chiaro nel file`() {

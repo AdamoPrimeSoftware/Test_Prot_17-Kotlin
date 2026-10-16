@@ -24,8 +24,8 @@ import it.prime.protocollo17.ecr17.model.TerminalIds
 import it.prime.protocollo17.ecr17.testing.Frames
 
 /**
- * [WP5] Esiti costruiti a mano per i test del data layer e dei servizi: nessuna dipendenza dal parser (WP2) né
- * dal client (WP3), così journal, repository e servizio si provano prima del merge.
+ * [WP5] Esiti costruiti a mano per i test del data layer e dei servizi: nessuna dipendenza dal parser né dal
+ * client, così journal, repository e servizio si provano senza socket e senza dipendere dai loro errori.
  */
 object OutcomeFixtures {
 

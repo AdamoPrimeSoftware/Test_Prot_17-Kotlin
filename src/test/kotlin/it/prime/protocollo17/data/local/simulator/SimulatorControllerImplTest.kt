@@ -20,7 +20,7 @@ import java.net.Socket
 
 /**
  * Ciclo di vita del simulatore visto dall'app (skill embedded-server §8), con socket reali su loopback e porte
- * effimere (mai porte fisse: più build girano in parallelo). Richiede TerminalSimulator (WP4): gira dopo il merge.
+ * effimere (mai porte fisse: più build girano in parallelo).
  */
 class SimulatorControllerImplTest {
 

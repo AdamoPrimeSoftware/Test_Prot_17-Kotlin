@@ -29,7 +29,6 @@ import it.prime.protocollo17.ecr17.profile.TerminalProfileId
 import it.prime.protocollo17.ecr17.profile.TerminalProfiles
 import it.prime.protocollo17.presentation.FakeCommandRunner
 import it.prime.protocollo17.presentation.FakeSettings
-import it.prime.protocollo17.presentation.StubFallbacks
 import it.prime.protocollo17.presentation.UiFixtures
 import it.prime.protocollo17.presentation.popStandaloneScreenModels
 import it.prime.protocollo17.presentation.state.RunnerState
@@ -61,7 +60,7 @@ import org.junit.jupiter.api.Test
 /**
  * Console (§6.5, §7.8): blocco dei pagamenti, conferme, annullamento e G sono le difese che l'operatore vede.
  * Il runner è un fake con gate (un comando resta in corso finché il test non lo conclude), gli altri
- * collaboratori sono mock; gli stub degli altri WP passano da StubFallbacks.
+ * collaboratori sono mock.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConsoleViewModelTest {
@@ -86,7 +85,6 @@ class ConsoleViewModelTest {
     @BeforeEach
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        StubFallbacks.install()
         runner = FakeCommandRunner()
         settings = FakeSettings()
         pos = mockk(relaxed = true) {
@@ -108,7 +106,6 @@ class ConsoleViewModelTest {
     @AfterEach
     fun tearDown() {
         popStandaloneScreenModels()
-        StubFallbacks.uninstall()
         Dispatchers.resetMain()
     }
 
