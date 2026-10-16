@@ -28,6 +28,10 @@ interface JournalRepository {
      * Avvio (prima della UI): carica, compatta se oltre la soglia, chiude come UNKNOWN i tentativi rimasti in
      * SENDING/ACKED/GO_AHEAD/RECEIVED (failure "app terminata durante lo scambio"; con RECEIVED il payload resta
      * come prova), come NOT_SENT quelli in CREATED, e come UNKNOWN quelli senza CREATED non chiusi.
+     *
+     * Journal illeggibile (errore di I/O) ⇒ lancia senza pubblicare nulla: l'app non deve partire (M6), perché
+     * senza il file non si sa quali pagamenti sono rimasti senza esito. File mancante ⇒ journal vuoto; righe
+     * corrotte ⇒ saltate e conservate in journal.jsonl.corrupt-*.
      */
     suspend fun recoverOnStartup(): List<JournalEntry>
 

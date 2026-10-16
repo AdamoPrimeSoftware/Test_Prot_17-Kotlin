@@ -39,8 +39,6 @@ import it.prime.protocollo17.presentation.screen.traffic.viewModel.TrafficLogUiS
 import it.prime.protocollo17.presentation.model.FieldRow
 import it.prime.protocollo17.presentation.model.ResultTone
 import it.prime.protocollo17.presentation.theme.PreviewTheme
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
 /**
@@ -49,12 +47,6 @@ import org.junit.jupiter.api.Test
  * una colonna scrollabile) a schermo diventa una finestra bianca: qui diventa un test rosso.
  */
 class ScreenRenderSmokeTest {
-
-    @BeforeEach
-    fun setUp() = StubFallbacks.install()
-
-    @AfterEach
-    fun tearDown() = StubFallbacks.uninstall()
 
     private fun render(widthDp: Int, heightDp: Int, dark: Boolean = false, content: @Composable () -> Unit) {
         // Densità 1.5: una finestra di 960×600 dp al 150% (§6.1).
@@ -70,16 +62,13 @@ class ScreenRenderSmokeTest {
         }
     }
 
-    // lazy: le viste usano Hex (ponte di StubFallbacks), installato in @BeforeEach dopo la costruzione del test.
-    private val payment by lazy { ResultViewMapper.map(UiFixtures.finished(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment()))) }
+    private val payment = ResultViewMapper.map(UiFixtures.finished(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment())))
 
-    private val consoleState by lazy {
-        ConsoleUiState(
+    private val consoleState = ConsoleUiState(
         drafts = CommandCode.entries.associateWith { RequestFactory.defaults(it) },
         results = mapOf(CommandCode.PAYMENT to payment),
-            history = listOf(ResultViewMapper.historyRow(UiFixtures.finished(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment())))),
-        )
-    }
+        history = listOf(ResultViewMapper.historyRow(UiFixtures.finished(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment())))),
+    )
 
     @Test
     fun `console affiancata, impilata, occupata e con il banner`() {

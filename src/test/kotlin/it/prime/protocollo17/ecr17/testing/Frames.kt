@@ -7,8 +7,8 @@ import it.prime.protocollo17.ecr17.wire.LrcMode
 /**
  * [WP0] Solo costanti e LrcMode.compute: compilabile e usabile da WP1, WP2, WP3, WP4 senza dipendenze.
  *
- * Mai `Hex.parse` qui dentro: è uno stub di WP1, e una fixture che lo usasse farebbe fallire i test di tutti
- * gli altri pacchetti prima del merge di WP1. I byte di controllo sono scritti come letterali.
+ * Mai `Hex.parse` qui dentro: le fixture non dipendono dal codice sotto test, e un errore di Hex rovinerebbe in
+ * silenzio i vettori di tutti i test. I byte di controllo sono scritti come letterali.
  *
  * Vettori verificati (§7.1, Appendice): P1 167 B LRC stx 2F; E4 71 B LRC stx 46 / std 47; E4_FLIPPED_12 LRC std 46
  * (= LRC stx di E4, SE-48); E22 71 B LRC stx 21; I75_KO_CLEAR 75 B.

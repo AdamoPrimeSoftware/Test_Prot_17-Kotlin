@@ -1005,6 +1005,26 @@ class Ecr17SessionTest {
         }
     }
 
+    /**
+     * M9: un frammento di riga S con il PAN spezzato da 0x7F (doppia altezza), scartato per resync o rimasto come
+     * rumore in coda, esce mascherato nel Discarded. Prima maskDigitRuns vedeva due sequenze da 8 cifre, sotto la
+     * soglia, e il PAN arrivava in chiaro al log traffico.
+     */
+    @Test
+    fun `SE-52b PAN spezzato da 0x7F mascherato nei byte scartati`() = runTest {
+        val h = harness()
+        val fragment = raw(0x02) + "123456780SPAN 41111111\u007F11111111".toByteArray(Charsets.ISO_8859_1)
+        val noise = "41111111\u007F11111111".toByteArray(Charsets.ISO_8859_1)
+        h.transport.onApplicationFrame(bytes(0, Frames.ACKW, fragment, app(Frames.E22), noise))
+
+        success(h.run())
+
+        val texts = h.discarded.map { String(it.bytes, Charsets.ISO_8859_1) }
+        assertTrue(h.discarded.any { it.reason == DiscardReason.RESYNC_ON_NEW_START }, "frammento scartato per resync: $texts")
+        assertEquals(2, texts.count { "********\u007F****1111" in it }, "frammento e rumore mascherati: $texts")
+        texts.forEach { assertFalse("41111111" in it, "metà del PAN in chiaro in un Discarded: $it") }
+    }
+
     /** §5.5: la cancellazione della coroutine nel drain si propaga; RESULT_RECEIVED (con resultRaw) è già stata notificata. */
     @Test
     fun `SE-53 cancellazione della coroutine durante il drain`() = runTest {

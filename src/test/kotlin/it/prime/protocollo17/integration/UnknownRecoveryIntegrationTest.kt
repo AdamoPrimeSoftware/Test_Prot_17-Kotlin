@@ -10,6 +10,8 @@ import it.prime.protocollo17.domain.model.settings.JournalSettings
 import it.prime.protocollo17.domain.model.settings.ProtocolSettings
 import it.prime.protocollo17.domain.model.settings.TerminalSettings
 import it.prime.protocollo17.domain.util.ConfigResolver
+import it.prime.protocollo17.domain.util.GAssessment
+import it.prime.protocollo17.domain.util.GVerdict
 import it.prime.protocollo17.domain.util.PaymentBlockPolicy
 import it.prime.protocollo17.ecr17.client.Ecr17Client
 import it.prime.protocollo17.ecr17.model.CommandCode
@@ -18,6 +20,7 @@ import it.prime.protocollo17.ecr17.model.Ecr17Request
 import it.prime.protocollo17.ecr17.model.LastResultRequest
 import it.prime.protocollo17.ecr17.model.PaymentRequest
 import it.prime.protocollo17.ecr17.model.TransactionResponse
+import it.prime.protocollo17.ecr17.model.Verdict
 import it.prime.protocollo17.ecr17.sim.SimFault
 import it.prime.protocollo17.ecr17.sim.SimulatorConfig
 import it.prime.protocollo17.ecr17.sim.TerminalSimulator
@@ -36,12 +39,13 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.File
 
 /**
- * Percorso completo "P sconosciuto → bloccato → G → risolto → P" (§7.7, §8.10 punto 2) con simulatore reale su
- * loopback (porta 0), client e trasporto TCP reali, journal reale su @TempDir e timeout brevi.
+ * Percorso completo "P sconosciuto → bloccato → G → valutato → risolto → P" (§7.7, §8.10 punto 2) con simulatore
+ * reale su loopback (porta 0), client e trasporto TCP reali, journal reale su @TempDir e timeout brevi.
  *
- * Richiede WP1-WP4 (wire, message, client, simulatore): gira dopo il merge. Il controllo con GAssessment (WP6) si
- * aggiunge in integrazione finale: qui si verifica che il journal fornisca gli esiti precedenti (knownResultsBefore)
- * e che G restituisca un esito di transazione confrontabile.
+ * Il suggerimento per l'operatore si calcola come nella Console: GAssessment sul tentativo letto dal journal, con gli
+ * esiti precedenti di knownResultsBefore. Con SILENT il simulatore non ha mai servito il pagamento, quindi G riporta il
+ * suo "nessuna operazione" (E KO senza data/ora host): il verdetto atteso è INCONCLUSIVE (regola 5 di §5.3.4), mai
+ * LIKELY_THIS_ATTEMPT, che farebbe credere all'operatore a un addebito mai avvenuto.
  */
 class UnknownRecoveryIntegrationTest {
 
@@ -119,9 +123,15 @@ class UnknownRecoveryIntegrationTest {
         gOutcome as CommandOutcome.Answered
         assertTrue(gOutcome.response is TransactionResponse, "G restituisce un esito di transazione")
 
-        // 4. Esiti precedenti per la valutazione di G (GAssessment, WP6): nessun tentativo prima di questo.
+        // 4. Valutazione di G sul tentativo (dialog di risoluzione, §6.8): nessun esito precedente, e un rifiuto senza
+        //    data/ora host non si può attribuire a nessun tentativo.
         val earlier = stack.journal.knownResultsBefore(attemptId)
         assertTrue(earlier.isEmpty(), "nessun esito precedente: $earlier")
+        assertEquals(Verdict.DECLINED, (gOutcome.response as TransactionResponse).verdict, "G riporta il KO \"nessuna operazione\"")
+        val attempt = stack.journal.unresolved.value.single { it.attemptId == attemptId }
+        val assessment = GAssessment.assess(attempt, earlier, gOutcome)
+        assertEquals(GVerdict.INCONCLUSIVE, assessment.verdict, "verdetto di G: ${assessment.explanation}")
+        assertTrue(assessment.explanation.contains("rifiuto senza data/ora host"), assessment.explanation)
 
         // 5. L'operatore chiude il tentativo e i pagamenti si sbloccano.
         runBlocking { stack.journal.resolve(attemptId, ResolutionKind.CONFIRMED_BY_G, "G controllato dall'operatore", gOutcome) }

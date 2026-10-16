@@ -33,11 +33,17 @@ internal object SourceImports {
     }
 
     /**
-     * Testo del file senza commenti, per i controlli testuali (Dispatchers.Main/IO): una KDoc che spiega
-     * "mai Dispatchers.IO qui" non deve far fallire il test, il codice che lo usa sì.
+     * Testo del file senza commenti, per i controlli testuali (Dispatchers.Main/IO, withTimeout): una KDoc che spiega
+     * "mai Dispatchers.IO qui" non deve far fallire il test, il codice che lo usa sì. I commenti diventano spazi con
+     * gli a capo conservati, così offset e numeri di riga restano quelli del file.
      */
     fun codeWithoutComments(file: File): String =
-        file.readText().replace(blockComment, " ").replace(lineComment, " ")
+        file.readText().replace(blockComment, ::blank).replace(lineComment, ::blank)
+
+    /** Numero di riga (da 1) dell'offset [index] in [text]. */
+    fun lineAt(text: String, index: Int): Int = 1 + (0 until index).count { text[it] == '\n' }
+
+    private fun blank(match: MatchResult): String = match.value.replace(Regex("[^\r\n]"), " ")
 
     fun rel(file: File): String = file.invariantSeparatorsPath.substringAfter("src/main/kotlin/")
 

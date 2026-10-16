@@ -101,15 +101,42 @@ class JournalStore(private val dir: File) : AutoCloseable {
         return records
     }
 
-    /** Le righe illeggibili (tipicamente l'ultima, troncata) non si perdono: si conservano per l'analisi. */
+    /**
+     * Le righe illeggibili (tipicamente l'ultima, troncata) non si perdono: si conservano per l'analisi.
+     *
+     * Prima ogni avvio creava un nuovo `.corrupt-<millis>` con le stesse righe, che restano nel journal finché una
+     * compattazione non lo riscrive. Ora si salvano solo le righe che nessun file corrupt esistente contiene già: a
+     * contenuto identico non si crea nulla. Se un file esistente non è leggibile si salva comunque (meglio un
+     * duplicato che una riga persa).
+     */
     private fun saveCorrupt(lines: List<String>) {
+        val saved = savedCorruptLines()
+        val fresh = lines.filter { it !in saved }
+        if (fresh.isEmpty()) {
+            log.warn("Journal: {} righe illeggibili saltate, già conservate in {}.corrupt-*", lines.size, FILE_NAME)
+            return
+        }
         val target = File(dir, "$FILE_NAME.corrupt-${System.currentTimeMillis()}")
-        log.warn("Journal: {} righe illeggibili saltate, conservate in {}", lines.size, target.name)
+        log.warn("Journal: {} righe illeggibili saltate, {} nuove conservate in {}", lines.size, fresh.size, target.name)
         try {
-            target.appendText(lines.joinToString(separator = "\n", postfix = "\n"), Charsets.UTF_8)
+            target.appendText(fresh.joinToString(separator = "\n", postfix = "\n"), Charsets.UTF_8)
         } catch (e: Exception) {
             log.error("Journal: copia delle righe illeggibili in {} non riuscita: {}", target.name, e.message)
         }
+    }
+
+    /** Righe già conservate nei file `journal.jsonl.corrupt-*` della cartella. */
+    private fun savedCorruptLines(): Set<String> {
+        val files = dir.listFiles { f -> f.isFile && f.name.startsWith("$FILE_NAME.corrupt-") }.orEmpty()
+        val saved = HashSet<String>()
+        for (f in files) {
+            try {
+                f.readLines(Charsets.UTF_8).forEach { saved += it.trimEnd('\r') }
+            } catch (e: IOException) {
+                log.warn("Journal: {} non leggibile, le righe illeggibili si salvano comunque: {}", f.name, e.message)
+            }
+        }
+        return saved
     }
 
     private fun appendLocked(line: String) {

@@ -32,7 +32,7 @@ import java.time.LocalDateTime
  *
  * Protegge la lettura alle posizioni giuste (un campo spostato cambia STAN e online id usati per riconciliare un
  * pagamento), i rami asimmetrici della spec, la decodifica ISO-8859-1 (A§8 D6) e il fatto che un payload
- * malformato non lancia mai. I casi con `maskPan = true` usano PanMasker (WP1) e girano dopo il suo merge.
+ * malformato non lancia mai. I casi con `maskPan = true` passano da PanMasker (M9).
  */
 class ResponseParserTest {
 

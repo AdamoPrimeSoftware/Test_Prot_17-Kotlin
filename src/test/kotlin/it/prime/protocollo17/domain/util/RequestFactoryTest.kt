@@ -17,9 +17,9 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * Dai testi del form alla richiesta tipizzata (§5.8, tabella §6.6). Gira dopo il merge di WP2: le regole di cifre,
- * larghezze e ASCII sono SOLO in RequestEncoder.validate, e questi test verificano che il form le mostri sul campo
- * giusto invece di lasciarle esplodere come NotSent a comando lanciato.
+ * Dai testi del form alla richiesta tipizzata (§5.8, tabella §6.6). Le regole di cifre, larghezze e ASCII sono SOLO
+ * in RequestEncoder.validate, e questi test verificano che il form le mostri sul campo giusto invece di lasciarle
+ * esplodere come NotSent a comando lanciato.
  */
 class RequestFactoryTest {
 

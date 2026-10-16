@@ -183,6 +183,7 @@ class ConsoleViewModel(
                             link = state.connection.link,
                             lastSeenTerminalId = state.connection.lastSeenTerminalId,
                             testing = state.connection.testing,
+                            switching = state.connection.switching,
                         ),
                     )
                 }
@@ -393,7 +394,8 @@ class ConsoleViewModel(
     }
 
     private fun pingStatus() {
-        if (_uiState.value.busy) return
+        val state = _uiState.value
+        if (state.busy || state.linkBusy) return
         if (start(StatusRequest, showResult = false)) pingPending = true
     }
 
@@ -401,19 +403,29 @@ class ConsoleViewModel(
      * Un solo punto verso il runner: rifiuti tradotti in evento o dialog (M7: mai accodare). true = partito.
      * [showResult]: il pannello torna alla scheda Esito (e lascia la voce di cronologia che si stava guardando),
      * così l'esito del comando appena lanciato è quello visibile; F5 no, il suo esito arriva come avviso.
+     *
+     * Con un'operazione di collegamento in corso ([ConsoleUiState.linkBusy]) il comando non parte: il client è
+     * occupato e lo rifiuterebbe con `NotSent(Busy)` dopo che il repository ha già scritto il tentativo nel journal.
+     * Le azioni lo controllano già prima; qui resta la difesa per ConfirmRun di un dialog aperto prima del test.
      */
-    private fun start(request: Ecr17Request, showResult: Boolean = true): Boolean = when (val result = runner.run(request, RunOrigin.CONSOLE)) {
-        RunStart.Started -> {
-            if (showResult) _uiState.update { it.copy(viewedHistory = null, resultTab = ResultTab.RESULT) }
-            true
+    private fun start(request: Ecr17Request, showResult: Boolean = true): Boolean {
+        if (_uiState.value.linkBusy) {
+            emit(ConsoleEvent.ShowError(LINK_BUSY_MESSAGE))
+            return false
         }
-        RunStart.Busy, is RunStart.InvalidConfig -> {
-            FailureMessages.forRunStart(result)?.let { emit(ConsoleEvent.ShowError(it)) }
-            false
-        }
-        is RunStart.Blocked -> {
-            openBlockedInfo(result.blocking)
-            false
+        return when (val result = runner.run(request, RunOrigin.CONSOLE)) {
+            RunStart.Started -> {
+                if (showResult) _uiState.update { it.copy(viewedHistory = null, resultTab = ResultTab.RESULT) }
+                true
+            }
+            RunStart.Busy, is RunStart.InvalidConfig -> {
+                FailureMessages.forRunStart(result)?.let { emit(ConsoleEvent.ShowError(it)) }
+                false
+            }
+            is RunStart.Blocked -> {
+                openBlockedInfo(result.blocking)
+                false
+            }
         }
     }
 
@@ -560,7 +572,7 @@ class ConsoleViewModel(
 
     private fun testConnection() {
         val state = _uiState.value
-        if (state.busy || state.connection.testing) return
+        if (state.busy || state.linkBusy) return
         setTesting(true)
         screenModelScope.launch {
             try {
@@ -587,8 +599,11 @@ class ConsoleViewModel(
         _uiState.update { it.copy(connection = it.connection.copy(testing = testing)) }
     }
 
+    /** Connetti/Disconnetti: `switching` durante l'operazione, così i comandi restano disabilitati (vedi linkBusy). */
     private fun connection(connect: Boolean) {
-        if (_uiState.value.busy) return
+        val state = _uiState.value
+        if (state.busy || state.linkBusy) return
+        setSwitching(true)
         screenModelScope.launch {
             try {
                 val failure = if (connect) pos.connect() else pos.disconnect()
@@ -602,8 +617,14 @@ class ConsoleViewModel(
             } catch (e: Exception) {
                 log.warn("Connessione/disconnessione fallita", e)
                 emit(ConsoleEvent.ShowError("Operazione non riuscita: ${e.message}"))
+            } finally {
+                setSwitching(false)
             }
         }
+    }
+
+    private fun setSwitching(switching: Boolean) {
+        _uiState.update { it.copy(connection = it.connection.copy(switching = switching)) }
     }
 
     private fun showHistoryItem(id: Long?) {
@@ -670,6 +691,7 @@ class ConsoleViewModel(
         is SimulatorStatus.Failed -> when (val failure = status.failure) {
             is SimulatorFailure.PortInUse -> "Porta ${failure.port} in uso: cambiala nel Simulatore"
             is SimulatorFailure.Unexpected -> "Simulatore non avviato: ${failure.message}"
+            is SimulatorFailure.ListenerDied -> "Simulatore interrotto sulla porta ${failure.port}: riavvialo"
         }
     }
 
@@ -691,6 +713,8 @@ class ConsoleViewModel(
     private companion object {
         /** 0x06: costante locale perché la presentation non può importare ControlChars (§2.10). */
         const val ACK_BYTE = 0x06
+
+        const val LINK_BUSY_MESSAGE = "Operazione di collegamento in corso: attendi che finisca"
 
         val SHARED_AMOUNT = setOf(CommandCode.PAYMENT, CommandCode.PAYMENT_EXTENDED, CommandCode.PRE_AUTH)
 

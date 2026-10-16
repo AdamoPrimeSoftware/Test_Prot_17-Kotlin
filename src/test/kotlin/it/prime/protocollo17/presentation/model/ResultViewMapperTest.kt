@@ -12,15 +12,12 @@ import it.prime.protocollo17.ecr17.model.ReceiptLine
 import it.prime.protocollo17.ecr17.model.ReprintRequest
 import it.prime.protocollo17.ecr17.model.ReprintTarget
 import it.prime.protocollo17.ecr17.testing.Frames
-import it.prime.protocollo17.presentation.StubFallbacks
 import it.prime.protocollo17.presentation.UiFixtures
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
 /**
@@ -29,12 +26,6 @@ import org.junit.jupiter.api.Test
  * pagamento forse già addebitato (U8, M6).
  */
 class ResultViewMapperTest {
-
-    @BeforeEach
-    fun setUp() = StubFallbacks.install()
-
-    @AfterEach
-    fun tearDown() = StubFallbacks.uninstall()
 
     private fun view(outcome: CommandOutcome) = ResultViewMapper.map(UiFixtures.finished(outcome))
 

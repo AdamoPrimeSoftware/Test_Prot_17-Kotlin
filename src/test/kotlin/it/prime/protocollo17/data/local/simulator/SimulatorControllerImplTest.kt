@@ -13,12 +13,14 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import it.prime.protocollo17.ecr17.sim.TerminalSimulator
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.Socket
 
 /**
  * Ciclo di vita del simulatore visto dall'app (skill embedded-server §8), con socket reali su loopback e porte
- * effimere (mai porte fisse: più build girano in parallelo). Richiede TerminalSimulator (WP4): gira dopo il merge.
+ * effimere (mai porte fisse: più build girano in parallelo).
  */
 class SimulatorControllerImplTest {
 
@@ -51,6 +53,22 @@ class SimulatorControllerImplTest {
             Thread.sleep(10)
         }
         return controller.status.value
+    }
+
+    private fun awaitTrue(message: () -> String, timeoutMs: Long = 5_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!condition()) {
+            check(System.currentTimeMillis() < deadline) { "timeout: ${message()}" }
+            Thread.sleep(10)
+        }
+    }
+
+    /** ServerSocket dell'engine dentro il controller (come listenerOf di TerminalSimulatorLifecycleTest). */
+    private fun listenerOf(controller: SimulatorControllerImpl): ServerSocket {
+        val sim = SimulatorControllerImpl::class.java.getDeclaredField("simulator").apply { isAccessible = true }.get(controller)
+        val running = TerminalSimulator::class.java.getDeclaredField("running").apply { isAccessible = true }.get(sim)
+            ?: error("simulatore non avviato")
+        return running.javaClass.getDeclaredField("server").apply { isAccessible = true }.get(running) as ServerSocket
     }
 
     private fun canBind(port: Int): Boolean = try {
@@ -146,6 +164,35 @@ class SimulatorControllerImplTest {
 
         assertEquals(SimulatorStatus.Stopped, controller.status.value, "fermo")
         assertTrue(canBind(port), "porta liberata")
+    }
+
+    /**
+     * Prima si osservavano solo gli eventi: se l'ascolto moriva da solo (TerminalSimulator.listenerDied azzera
+     * boundPort) lo stato restava Running e isTarget vero, e l'operatore credeva raggiungibile un simulatore che
+     * rifiutava ogni connessione. Ora lo stato passa a Failed(ListenerDied), isTarget torna falso e un nuovo start()
+     * riparte pulito. Il guasto si provoca come in SL-08: soTimeout di 1 ms sul ServerSocket già in ascolto, poi una
+     * connessione che sblocca la accept() in corso; la successiva scade subito, fuori da stop().
+     */
+    @Test
+    fun `ascolto morto da solo porta a Failed e isTarget falso`(): Unit = runBlocking {
+        val repo = settings { it.copy(simulator = it.simulator.copy(port = 0)) }
+        val controller = controller(repo)
+        val port = controller.start().runningPort!!
+        assertTrue(controller.useAsTarget(), "destinazione del terminale")
+        awaitTrue({ "isTarget mai vero" }) { controller.isTarget.value }
+
+        listenerOf(controller).soTimeout = 1
+        toClose += Socket(InetAddress.getByName("127.0.0.1"), port)
+
+        val failed = awaitStatus(controller) { it is SimulatorStatus.Failed }
+        assertEquals(SimulatorStatus.Failed(SimulatorFailure.ListenerDied(port)), failed, "stato dopo la morte dell'ascolto")
+        awaitTrue({ "isTarget ancora vero" }) { !controller.isTarget.value }
+        awaitTrue({ "nota mancante nel log: ${controller.log.value.map { it.text }}" }) {
+            controller.log.value.any { it.text.startsWith("Ascolto interrotto") }
+        }
+
+        val restarted = controller.start()
+        assertTrue(restarted is SimulatorStatus.Running, "riavvio dopo la morte dell'ascolto: $restarted")
     }
 
     @Test
