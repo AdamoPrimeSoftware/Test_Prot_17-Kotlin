@@ -267,6 +267,37 @@ class JournalRepositoryImplTest {
         assertEquals(listOf("orfano"), recovered.map { it.attemptId }, "restituito dal recupero")
     }
 
+    /**
+     * Politica scelta dall'utente (§5.3.3): journal illeggibile all'avvio ⇒ l'app non parte. Prima recoverOnStartup
+     * inghiottiva l'errore e pubblicava un'entry sintetica "journal-illeggibile-*": l'app partiva senza i tentativi
+     * veri, e chiudendo quell'entry con una nota si sbloccavano i pagamenti (M6). Ora lancia e non pubblica nulla.
+     * Il file illeggibile è simulato con `journal.jsonl` creato come cartella: readBytes lancia IOException.
+     */
+    @Test
+    fun `journal illeggibile all'avvio lancia e non pubblica entry`(): Unit = runBlocking {
+        assertTrue(File(dir, "journal.jsonl").mkdirs(), "journal.jsonl come cartella")
+        val repo = repo()
+
+        val error = errorOf { repo.recoverOnStartup() }
+
+        assertTrue(error is IOException, "IOException rilanciata: $error")
+        assertTrue(repo.entries.value.isEmpty(), "nessuna entry pubblicata: ${repo.entries.value}")
+        assertTrue(repo.unresolved.value.isEmpty(), "nessuna entry sintetica bloccante")
+    }
+
+    /** Lo stesso con un errore di lettura qualunque dello store (file bloccato): rilanciato così com'è. */
+    @Test
+    fun `errore di lettura dello store rilanciato da recoverOnStartup`(): Unit = runBlocking {
+        val store = spyk(JournalStore(dir)).also { s -> coEvery { s.readAll() } throws IOException("file bloccato da un altro processo") }
+        val repo = repo(store)
+
+        // Tipo e messaggio, non l'identità: il recupero dello stack trace delle coroutine può consegnarne una copia.
+        val error = errorOf { repo.recoverOnStartup() }
+        assertTrue(error is IOException, "IOException rilanciata: $error")
+        assertEquals("file bloccato da un altro processo", error?.message, "stesso errore")
+        assertTrue(repo.entries.value.isEmpty(), "nessuna entry pubblicata")
+    }
+
     @Test
     fun `recoverOnStartup chiude i tentativi rimasti a meta`(): Unit = runBlocking {
         JournalStore(dir).apply {
