@@ -227,6 +227,7 @@ plugins {
 }
 
 group = "it.prime"
+// Unica fonte della versione: ne derivano packageVersion e app-version.properties (Aiuto > Informazioni).
 version = "1.0.0"
 
 kotlin {
@@ -265,11 +266,20 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
+tasks.processResources {
+    // Prima la versione mostrata dall'app era una costante in MainWindow e poteva divergere dal pacchetto.
+    val appVersion = project.version.toString()
+    inputs.property("appVersion", appVersion)
+    filesMatching("app-version.properties") { expand("version" to appVersion) }
+}
+
 tasks.test {
     useJUnitPlatform {
         // I test contro un terminale reale partono solo con -PrealTerminal (vedi §7.10)
         if (!project.hasProperty("realTerminal")) excludeTags("real-terminal")
     }
+    // AppVersionTest confronta la risorsa generata con la versione di Gradle.
+    systemProperty("app.version", project.version.toString())
 }
 
 compose.desktop {
@@ -281,11 +291,11 @@ compose.desktop {
             languageVersion.set(JavaLanguageVersion.of(21))
         }.get().metadata.installationPath.asFile.absolutePath
         nativeDistributions {
-            // Da riverificare con `.\gradlew.bat suggestModules` prima del primo pacchetto.
-            modules("java.instrument", "java.management", "jdk.unsupported")
+            // Da `.\gradlew.bat suggestModules` (2026-10-16); rieseguirlo quando cambiano le dipendenze.
+            modules("java.instrument", "jdk.unsupported")
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Protocollo17ComposeDesktop"
-            packageVersion = "1.0.0"          // MSI rifiuta MAJOR = 0
+            packageVersion = project.version.toString()   // MSI rifiuta MAJOR = 0
             description = "Test app Protocollo 17 (ECR17) per terminali Ingenico/CCV"
             vendor = "Prime Software"
             windows {
@@ -297,7 +307,7 @@ compose.desktop {
 }
 ```
 
-Comandi (da riportare in `CLAUDE.md`): `.\gradlew.bat compileKotlin`, `.\gradlew.bat test`, `.\gradlew.bat run`, `.\gradlew.bat packageDistributionForCurrentOS`. Per i test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input del task).
+Comandi (riportati in `CLAUDE.md`): `.\gradlew.bat compileKotlin`, `.\gradlew.bat test`, `.\gradlew.bat run`, `.\gradlew.bat packageDistributionForCurrentOS` (MSI ed EXE in `build/compose/binaries/main/{msi,exe}`), `.\gradlew.bat suggestModules`. Per i test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input del task).
 
 ### 2.6 Gradle wrapper
 
@@ -3921,7 +3931,7 @@ Le scelte vengono da `SimCatalog` (dominio, §5.6): la presentation non importa 
 
 - Le scorciatoie Ctrl+, / L / J / Shift+S sono acceleratori del `MenuBar` della finestra principale (`Item(…, shortcut = KeyShortcut(Key.L, ctrl = true))`); le finestre secondarie hanno un proprio `onKeyEvent` che chiama `AppWindows.open` per le stesse combinazioni.
 - Ctrl+Invio, Esc, F5, Ctrl+frecce nel `onKeyEvent` della finestra principale (controllo `KeyEventType.KeyDown` per primo; Esc fuori dal ramo Ctrl, restituisce `false`). Il filtro "dialog aperto" sta nel Root della Console (`escapeCancels`, `shortcutsEnabled`, §6.5): la finestra inoltra sempre, il Root decide. Poiché un `OutlinedTextField` può consumare l'Invio, `CommandFormCard` aggiunge `Modifier.onPreviewKeyEvent { ctrl+Enter ⇒ onAction(RunSelected); true }`: un solo effetto per pressione, verificato a mano (§7.8).
-- `MenuBar` principale: **File** (Apri cartella dati, Esci) · **Comandi** (Esegui comando selezionato — Ctrl+Invio, Annulla comando — Esc, Stato terminale — F5, Test connessione; disabilitati durante un comando salvo Annulla) · **Finestre** (Opzioni, Log traffico, Journal, Simulatore) · **Strumenti** (Avvia simulatore / Ferma simulatore, Usa simulatore come terminale, Ripristina terminale ⇒ `ConsoleAction.StartSimulator/StopSimulator/UseSimulatorAsTarget/RestoreTerminal`) · **Aiuto** (Informazioni: versione, cartella dati, crediti del `NOTICE`). Il menu è dichiarato in `MainWindow`, sopra il `Navigator`, e non vede il `ConsoleViewModel`: le voci di *Comandi* e *Strumenti* inviano `Shortcut` sul `ShortcutBus` (`RunSelected`, `StopCurrentJob`, `PingStatus`, `TestConnection`, `StartSimulator`, `StopSimulator`, `UseSimulatorAsTarget`, `RestoreTerminal`) e il Root della Console le inoltra (§6.5); le voci *Finestre* chiamano direttamente `AppWindows.open`. L'abilitazione delle voci legge `CommandRunner.state` e `SimulatorController.status` con `koinInject`.
+- `MenuBar` principale: **File** (Apri cartella dati, Esci) · **Comandi** (Esegui comando selezionato — Ctrl+Invio, Annulla comando — Esc, Stato terminale — F5, Test connessione; disabilitati durante un comando salvo Annulla) · **Finestre** (Opzioni, Log traffico, Journal, Simulatore) · **Strumenti** (Avvia simulatore / Ferma simulatore, Usa simulatore come terminale, Ripristina terminale ⇒ `ConsoleAction.StartSimulator/StopSimulator/UseSimulatorAsTarget/RestoreTerminal`) · **Aiuto** (Informazioni: versione da `presentation/util/AppVersion`, che legge `app-version.properties` generato da `processResources` con la `version` di Gradle; cartella dati; crediti del `NOTICE`). Il menu è dichiarato in `MainWindow`, sopra il `Navigator`, e non vede il `ConsoleViewModel`: le voci di *Comandi* e *Strumenti* inviano `Shortcut` sul `ShortcutBus` (`RunSelected`, `StopCurrentJob`, `PingStatus`, `TestConnection`, `StartSimulator`, `StopSimulator`, `UseSimulatorAsTarget`, `RestoreTerminal`) e il Root della Console le inoltra (§6.5); le voci *Finestre* chiamano direttamente `AppWindows.open`. L'abilitazione delle voci legge `CommandRunner.state` e `SimulatorController.status` con `koinInject`.
 
 ### 6.16 Modulo Koin (`di/AppModule.kt`) [WP0]
 
@@ -4517,6 +4527,13 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
 ```
 
 5. Primo pacchetto: `.\gradlew.bat suggestModules`, aggiornamento di `modules(...)`, `packageDistributionForCurrentOS`, prova dell'MSI installato.
+   Stato al 2026-10-16: `suggestModules` ⇒ `modules("java.instrument", "jdk.unsupported")` (`java.management` non serviva); il pacchetto produce `build/compose/binaries/main/msi/Protocollo17ComposeDesktop-1.0.0.msi` ed `exe/Protocollo17ComposeDesktop-1.0.0.exe` (circa 99 MB, runtime jlink da JDK 21). La versione mostrata dall'app deriva da `version` (§2.5). Prova manuale dell'MSI, a carico dell'utente:
+   1. chiudere l'app se aperta; eseguire l'MSI: installazione per macchina (chiede l'elevazione), cartella proposta nel dialog (`C:\Program Files\Protocollo17ComposeDesktop`);
+   2. avviare da *Start > Protocollo17*; *Aiuto > Informazioni* mostra la versione `1.0.0` e la cartella dati;
+   3. in `~/.protocollo17/logs/app.log` il banner di avvio e nessun `NoClassDefFoundError`/`ClassNotFoundException` (un modulo JDK mancante si vede qui);
+   4. *Strumenti > Avvia simulatore*, *Usa simulatore come terminale*, poi `s` e un `P`: esiti, log traffico e journal scritti;
+   5. chiudere e riaprire (impostazioni e journal conservati); disinstallare da *Impostazioni > App*: `~/.protocollo17` resta;
+   6. aggiornamento: alzare `version`, ricostruire e installare sopra (stesso `upgradeUuid`); la stessa versione non si reinstalla sopra se stessa.
 
 ---
 

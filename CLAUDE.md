@@ -18,6 +18,9 @@ breakdown (WP0-WP6, tutti conclusi e uniti in `main`). Le analisi da cui deriva 
 .\gradlew.bat suggestModules                      # moduli JDK per jlink: rieseguilo se cambiano le dipendenze
 ```
 
+La versione dell'app è solo `version` in `build.gradle.kts`: ne derivano `packageVersion` e la risorsa
+`app-version.properties` letta da *Aiuto > Informazioni* (`presentation/util/AppVersion`, `AppVersionTest`).
+
 Test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input
 del task). Terminale reale (solo `s`, `T`, `G`, mai comandi finanziari):
 `.\gradlew.bat cleanTest test -PrealTerminal --no-build-cache --tests "*RealTerminalTest"` con `P17_HOST`/`P17_PORT`.
