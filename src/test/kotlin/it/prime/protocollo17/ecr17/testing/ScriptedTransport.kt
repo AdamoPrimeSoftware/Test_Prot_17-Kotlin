@@ -63,6 +63,9 @@ class ScriptedTransport(private val scope: CoroutineScope, private val wallClock
     /** Extra per i test d'ordine (SE-34): chiamato a ogni scrittura riuscita, con una copia dei byte. */
     var onWrite: ((ByteArray) -> Unit)? = null
 
+    /** Extra per i test della chiusura (CL-29): chiamato all'inizio di ogni close(); se lancia, il link resta aperto. */
+    var onClose: (() -> Unit)? = null
+
     /** Script consumato in ordine: uno per ogni write che inizia con STX (ritrasmissioni comprese). Script esaurito = silenzio. */
     fun onApplicationFrame(vararg steps: Step) {
         scripts.addLast(steps.toList())
@@ -162,6 +165,7 @@ class ScriptedTransport(private val scope: CoroutineScope, private val wallClock
 
     override suspend fun close() {
         closeCount++
+        onClose?.invoke()
         if (open) drop(CloseCause.LOCAL, null)
     }
 

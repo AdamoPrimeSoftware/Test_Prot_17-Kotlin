@@ -2099,6 +2099,8 @@ class Ecr17Client(
     - `PER_COMMAND` ⇒ `transport.close()`;
     - `PERSISTENT` ⇒ si chiude se: l'esito non è `Answered`/`Acknowledged`/`Refused` con `w` vero (cioè `Unknown`, `Failed`, `NotSent` dopo la connessione, annullamento), **oppure** la trace contiene un warning "sospetto" (`STALE_BYTES`, `POSSIBLE_LOST_RESULT`, `UNEXPECTED_REPLY`, `RESULT_RETRANSMITTED`, `EARLY_RESULT`), **oppure** la configurazione è passata a `PER_COMMAND` o l'endpoint è cambiato. Così un esito tardivo di un comando rimasto senza risposta arriva su un socket morto e non può essere letto come esito del comando successivo;
     - evento `CommandFinished`; `busy = null`; `current = null`; `mutex.unlock()`.
+
+    La chiusura è best effort: un'eccezione di `applyClosePolicy` si ignora, tranne `CancellationException`, che si rilancia (§2.12). Per questo evento, `busy`, `current` e `unlock` stanno in un `finally` a parte: avvengono anche quando la chiusura rilancia, altrimenti il mutex resterebbe preso e ogni comando successivo sarebbe `Busy`.
 11. `catch (e: CancellationException)`: `transport.abort()` in `NonCancellable`, evento `CommandFinished` con `outcome = if (w) (if (journaled) UNKNOWN else FAILED) else NOT_SENT`, rilancio. Qualsiasi altra eccezione inattesa (bug, errore del parser al punto 9, eccezione non `TransportException` dal trasporto) ⇒ `Internal(detail)` mappata **con lo stesso `w`**: `!w` ⇒ `NotSent(Internal)`; `w` e journaled ⇒ `Unknown(Internal)`; `w` e non journaled ⇒ `Failed(Internal)`. Mai propagata. Un esito APPROVATO già ricevuto e poi perso per un bug diventa quindi `Unknown` (bloccante), e il suo payload resta nel journal (record `RECEIVED`, §5.3).
 
 Emissione eventi: un `AtomicLong seq`; l'`EventEmitter` del client costruisce l'evento con `(seq, wallClock())`, lo passa prima a `eventSink.onEvent` (sincrono) e poi a `events.tryEmit`. `transport.linkListener` è impostato nel costruttore per emettere `ProtocolEvent.Link`.
@@ -4310,6 +4312,7 @@ Profilo `Frames.fast` (stx, `WIRE`, tollerante, `IMPLICIT_GO_AHEAD`) salvo dove 
 | CL-26 | `controlli strutturali della configurazione` | `Frames.fast` passa `validate()`; `ackTimeoutMs = 0` ⇒ `NotSent(ConfigInvalid)`; `nakRetryCount = 9` ⇒ `ConfigInvalid` | §3.16 |
 | CL-27 | `listener che lancia: NotSent solo prima del primo invio` | lancia su SENDING#1 ⇒ `NotSent(Internal)`; lancia su SENDING#2 (NAK poi ACK+esito) ⇒ `Answered` | M3, M10 |
 | CL-28 | `Refused solo se ogni invio ha avuto un NAK` | `NAKW` × 4 ⇒ `Refused(Nak(4))` | §3.20 |
+| CL-29 | `chiusura che lancia CancellationException rilascia comunque il lock` | `close()` del trasporto che lancia `CancellationException` ⇒ eccezione al chiamante, `busy == null`, `CommandFinished` emesso, comando successivo `Answered` | M7, §2.12 |
 | RP-01 | `tabella di verità del replay` | 8 combinazioni, `true` solo per (true, true, true) | A§9.7 |
 
 ### 7.5 Trasporto TCP (`TcpTransportTest`, WP3, socket reali su loopback)
