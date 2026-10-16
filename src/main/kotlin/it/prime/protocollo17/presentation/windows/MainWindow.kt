@@ -225,6 +225,7 @@ private fun NotificationsEffect(
                 val message = when (val f = failed.failure) {
                     is SimulatorFailure.PortInUse -> "Porta ${f.port} già in uso: cambiala nella finestra Simulatore"
                     is SimulatorFailure.Unexpected -> "Avvio non riuscito: ${f.message}"
+                    is SimulatorFailure.ListenerDied -> "Ascolto sulla porta ${f.port} interrotto: riavvia il simulatore"
                 }
                 notifications.error("Simulatore", message, openWindow = AppWindowId.SIMULATOR)
             }

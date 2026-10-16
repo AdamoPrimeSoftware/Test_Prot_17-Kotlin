@@ -2959,6 +2959,8 @@ data class SimStats(val connections: Int = 0, val requests: Int = 0, val rejecte
 sealed interface SimulatorFailure {
     data class PortInUse(val port: Int) : SimulatorFailure
     data class Unexpected(val message: String) : SimulatorFailure
+    /** L'ascolto è morto da solo dopo un avvio riuscito: le connessioni dell'ECR sono rifiutate finché non si riavvia. */
+    data class ListenerDied(val port: Int) : SimulatorFailure
 }
 
 sealed interface SimulatorStatus {
@@ -3001,6 +3003,7 @@ Comportamento (vincolante, skill embedded-server §1 e §8):
 - Osserva `settings.flow`: ogni cambio della sezione `simulator` ⇒ `updateConfig`; `settings.flow.map { it.simulator.port }.distinctUntilChanged().drop(1)` ⇒ se `Running` ⇒ `stop()` + `start()` sulla nuova porta (riavvio). `isTarget` = `combine(settings.flow, status)`.
 - Con `autoStart`, avvia all'inizializzazione (Koin lo crea in `Main` subito dopo `startKoin`); un fallimento resta nello stato `Failed` e la finestra principale lo notifica (§6.18).
 - Converte `SimEvent` in `SimLogEntry` (hex già mascherato dal simulatore) e aggiorna `stats` da `snapshot()` dopo ogni evento.
+- Osserva anche `simulator.boundPort`: un `null` con lo stato ancora `Running` (letto sotto il mutex del ciclo di vita, quindi mai durante `stop()` o un riavvio) vuol dire che l'ascolto è morto da solo (`listenerDied`) ⇒ `simulator.stop()` (scope e client chiusi, così un nuovo `start()` riparte pulito) e `Failed(ListenerDied(port))`; `isTarget` torna falso. Osservare solo gli eventi lasciava `Running` e `isTarget` vero con un simulatore che rifiutava ogni connessione.
 - `close()`: idempotente; ferma il simulatore (porta liberata) e cancella lo scope.
 
 ### 5.7 Sistema [WP0→WP5]
@@ -4363,7 +4366,7 @@ Profilo `Frames.fast` (stx, `WIRE`, tollerante, `IMPLICIT_GO_AHEAD`) salvo dove 
 | `SingleInstanceGuardTest` | secondo `acquire` sullo stesso file ⇒ `HeldByOther` |
 | `SimulatorConfigMapperTest` | valori sconosciuti ⇒ default + avviso; `appLrcMode` letto da wireName |
 | `SimCatalogTest` | `SimCatalog.faults.map { it.name } == SimFault.entries.map { it.name }`; idem decisioni, regole ACK (`ControlLrcRule`), modalità LRC (`LrcMode.wireName`) |
-| `SimulatorControllerImplTest` (`@TempDir`, porta 0 o porta libera) | `autoStart` ⇒ `Running`; porta occupata da un `ServerSocket` del test ⇒ `Failed(PortInUse)` (nessuna eccezione); cambio di `simulator.port` mentre è attivo ⇒ riavvio sulla nuova porta; `useAsTarget`/`restoreTarget` salvano e ripristinano host/porta; `close()` idempotente e porta liberata |
+| `SimulatorControllerImplTest` (`@TempDir`, porta 0 o porta libera) | `autoStart` ⇒ `Running`; porta occupata da un `ServerSocket` del test ⇒ `Failed(PortInUse)` (nessuna eccezione); cambio di `simulator.port` mentre è attivo ⇒ riavvio sulla nuova porta; ascolto morto da solo (soTimeout di 1 ms come SL-08) ⇒ `Failed(ListenerDied)`, `isTarget` falso, nuovo `start()` riuscito; `useAsTarget`/`restoreTarget` salvano e ripristinano host/porta; `close()` idempotente e porta liberata |
 | `UnknownRecoveryIntegrationTest` (`integration/`, dopo il merge di WP3 e WP4) | simulatore reale `SILENT` + `TerminalSessionService` + `PosTerminalRepositoryImpl` + `JournalRepositoryImpl` reale su `@TempDir`, timeout brevi: `run(P)` ⇒ `FinishedRun(Unknown)`; `run(P)` ⇒ `RunStart.Blocked`; simulatore `NONE`; `run(G)` ⇒ `Answered`; `GAssessment` sul tentativo ⇒ `INCONCLUSIVE` (con `SILENT` il pagamento non è mai stato servito e `G` riporta il KO "nessuna operazione" senza data/ora host, regola 5 di §5.3.4); `journal.resolve(CONFIRMED_BY_G)`; `run(P)` ⇒ `Started`. Variante: riavvio del `JournalRepositoryImpl` sullo stesso file dopo l'`Unknown` ⇒ `recoverOnStartup` mantiene il blocco |
 
 ### 7.8 ViewModel e presentazione (WP6)

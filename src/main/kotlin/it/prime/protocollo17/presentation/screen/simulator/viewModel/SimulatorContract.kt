@@ -25,6 +25,7 @@ data class SimulatorUiState(
     val statusError: String? get() = when (val f = (status as? SimulatorStatus.Failed)?.failure) {
         is SimulatorFailure.PortInUse -> "La porta ${f.port} è già in uso: scegline un'altra."
         is SimulatorFailure.Unexpected -> "Avvio non riuscito: ${f.message}"
+        is SimulatorFailure.ListenerDied -> "L'ascolto sulla porta ${f.port} si è interrotto da solo: avvia di nuovo il simulatore."
         null -> null
     }
 }

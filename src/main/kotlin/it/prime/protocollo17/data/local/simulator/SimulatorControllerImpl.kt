@@ -50,6 +50,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Skill embedded-server §1: la UI vede solo [status], [log] e [stats], mai l'engine; una porta occupata è uno
  * stato da spiegare accanto al campo porta, non un crash. Le impostazioni sono un StateFlow e valgono subito:
  * un cambio della sezione simulatore aggiorna l'engine, un cambio di porta lo riavvia se è in esecuzione.
+ *
+ * Un ascolto morto da solo (`TerminalSimulator.boundPort` che torna null fuori da start/stop) diventa `Failed`.
+ * Prima si osservavano solo gli eventi: lo stato restava Running, `isTarget` restava vero e l'operatore credeva di
+ * avere un simulatore raggiungibile mentre ogni connessione dell'ECR veniva rifiutata.
  */
 class SimulatorControllerImpl(
     private val settings: SettingsRepository,
@@ -94,6 +98,7 @@ class SimulatorControllerImpl(
         // UNDISPATCHED: la sottoscrizione avviene qui, prima che un avvio automatico possa emettere Started, e
         // prima che un cambio di impostazioni immediato venga scambiato per il valore iniziale da scartare.
         scope.launch(start = CoroutineStart.UNDISPATCHED) { simulator.events.collect(::onSimEvent) }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { simulator.boundPort.collect(::onBoundPort) }
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             settings.flow.map { it.simulator }.distinctUntilChanged().drop(1).collect(::applySettings)
         }
@@ -243,6 +248,25 @@ class SimulatorControllerImpl(
             throw e
         } catch (e: Exception) {
             logger.warn("Simulatore: arresto non riuscito: {}", e.message)
+        }
+    }
+
+    /**
+     * boundPort null con lo stato ancora Running: l'ascolto è morto da solo (TerminalSimulator.listenerDied).
+     *
+     * Sotto [lifecycle]: durante stop() boundPort torna null prima di `Stopped`, e qui si arriva solo dopo, a stato già
+     * Stopped; con un riavvio già riuscito boundPort vale di nuovo la porta nuova e il null vecchio si scarta. L'engine
+     * si ferma (scope e client chiusi, nessun `running` residuo), così un nuovo start() riparte pulito invece di
+     * fallire con "già avviato".
+     */
+    private suspend fun onBoundPort(port: Int?) {
+        if (port != null) return
+        lifecycle.withLock {
+            val current = _status.value
+            if (current !is SimulatorStatus.Running || simulator.boundPort.value != null || closed.get()) return@withLock
+            logger.warn("Simulatore: ascolto sulla porta {} interrotto", current.port)
+            stopEngineQuietly()
+            _status.value = SimulatorStatus.Failed(SimulatorFailure.ListenerDied(current.port))
         }
     }
 

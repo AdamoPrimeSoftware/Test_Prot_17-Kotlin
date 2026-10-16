@@ -691,6 +691,7 @@ class ConsoleViewModel(
         is SimulatorStatus.Failed -> when (val failure = status.failure) {
             is SimulatorFailure.PortInUse -> "Porta ${failure.port} in uso: cambiala nel Simulatore"
             is SimulatorFailure.Unexpected -> "Simulatore non avviato: ${failure.message}"
+            is SimulatorFailure.ListenerDied -> "Simulatore interrotto sulla porta ${failure.port}: riavvialo"
         }
     }
 
