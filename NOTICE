@@ -1,0 +1,10 @@
+Protocollo17ComposeDesktop
+Copyright (c) 2026 Prime Software
+
+Reimplementazione indipendente in Kotlin del protocollo ECR17 ("Protocollo 17").
+Il comportamento del protocollo è stato studiato, senza copiarne il codice, nei progetti di padosoft:
+  - rust-ecr17-protocol          https://github.com/padosoft/rust-ecr17-protocol          (MIT)
+  - react-native-ecr17-protocol  https://github.com/padosoft/react-native-ecr17-protocol  (LICENSE Apache-2.0; package.json MIT)
+  - laravel-ecr17                https://github.com/padosoft/laravel-ecr17                (LICENSE Apache-2.0; composer.json MIT)
+Grazie a padosoft per il lavoro pubblicato e per la documentazione sulle insidie dei terminali reali.
+Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ingenico Italia S.p.A.).

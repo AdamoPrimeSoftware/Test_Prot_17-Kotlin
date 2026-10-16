@@ -8,6 +8,7 @@ plugins {
 }
 
 group = "it.prime"
+// Unica fonte della versione: ne derivano packageVersion e app-version.properties (Aiuto > Informazioni).
 version = "1.0.0"
 
 kotlin {
@@ -46,11 +47,20 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
+tasks.processResources {
+    // Prima la versione mostrata dall'app era una costante in MainWindow e poteva divergere dal pacchetto.
+    val appVersion = project.version.toString()
+    inputs.property("appVersion", appVersion)
+    filesMatching("app-version.properties") { expand("version" to appVersion) }
+}
+
 tasks.test {
     useJUnitPlatform {
         // I test contro un terminale reale partono solo con -PrealTerminal (vedi §7.10)
         if (!project.hasProperty("realTerminal")) excludeTags("real-terminal")
     }
+    // AppVersionTest confronta la risorsa generata con la versione di Gradle.
+    systemProperty("app.version", project.version.toString())
 }
 
 compose.desktop {
@@ -62,16 +72,19 @@ compose.desktop {
             languageVersion.set(JavaLanguageVersion.of(21))
         }.get().metadata.installationPath.asFile.absolutePath
         nativeDistributions {
-            // Da riverificare con `.\gradlew.bat suggestModules` prima del primo pacchetto.
-            modules("java.instrument", "java.management", "jdk.unsupported")
+            // Da `.\gradlew.bat suggestModules` (2026-10-16); rieseguirlo quando cambiano le dipendenze.
+            modules("java.instrument", "jdk.unsupported")
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Protocollo17ComposeDesktop"
-            packageVersion = "1.0.0"          // MSI rifiuta MAJOR = 0
+            packageVersion = project.version.toString()   // MSI rifiuta MAJOR = 0
             description = "Test app Protocollo 17 (ECR17) per terminali Ingenico/CCV"
             vendor = "Prime Software"
             windows {
                 menuGroup = "Protocollo17"
                 upgradeUuid = "0e99d6a1-1ceb-4d07-8b01-6d9f27d4a11b"   // fisso per sempre
+                // Prima l'installer usava l'icona di default di Compose. Stesso disegno di rememberAppIcon() (§6.1),
+                // renderizzato una volta a 16/32/48/256 px: se cambia AppIcon.kt va rigenerato.
+                iconFile.set(project.file("src/main/packaging/icon.ico"))
             }
         }
     }

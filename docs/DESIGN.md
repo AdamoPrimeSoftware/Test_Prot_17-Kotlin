@@ -122,7 +122,8 @@ Protocollo17ComposeDesktop/
 ├── docs/ ANALISI_REPOSITORY.md, ANALISI_LARAVEL_ECR17.md, DESIGN.md
 └── src/
     ├── main/kotlin/it/prime/protocollo17/      (§2.8)
-    ├── main/resources/logback.xml
+    ├── main/resources/logback.xml, app-version.properties (§2.5)
+    ├── main/packaging/icon.ico                 (icona dell'installer, §2.5)
     └── test/kotlin/it/prime/protocollo17/      (§2.9)
 ```
 
@@ -227,6 +228,7 @@ plugins {
 }
 
 group = "it.prime"
+// Unica fonte della versione: ne derivano packageVersion e app-version.properties (Aiuto > Informazioni).
 version = "1.0.0"
 
 kotlin {
@@ -265,11 +267,20 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
+tasks.processResources {
+    // Prima la versione mostrata dall'app era una costante in MainWindow e poteva divergere dal pacchetto.
+    val appVersion = project.version.toString()
+    inputs.property("appVersion", appVersion)
+    filesMatching("app-version.properties") { expand("version" to appVersion) }
+}
+
 tasks.test {
     useJUnitPlatform {
         // I test contro un terminale reale partono solo con -PrealTerminal (vedi §7.10)
         if (!project.hasProperty("realTerminal")) excludeTags("real-terminal")
     }
+    // AppVersionTest confronta la risorsa generata con la versione di Gradle.
+    systemProperty("app.version", project.version.toString())
 }
 
 compose.desktop {
@@ -281,23 +292,28 @@ compose.desktop {
             languageVersion.set(JavaLanguageVersion.of(21))
         }.get().metadata.installationPath.asFile.absolutePath
         nativeDistributions {
-            // Da riverificare con `.\gradlew.bat suggestModules` prima del primo pacchetto.
-            modules("java.instrument", "java.management", "jdk.unsupported")
+            // Da `.\gradlew.bat suggestModules` (2026-10-16); rieseguirlo quando cambiano le dipendenze.
+            modules("java.instrument", "jdk.unsupported")
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Protocollo17ComposeDesktop"
-            packageVersion = "1.0.0"          // MSI rifiuta MAJOR = 0
+            packageVersion = project.version.toString()   // MSI rifiuta MAJOR = 0
             description = "Test app Protocollo 17 (ECR17) per terminali Ingenico/CCV"
             vendor = "Prime Software"
             windows {
                 menuGroup = "Protocollo17"
                 upgradeUuid = "0e99d6a1-1ceb-4d07-8b01-6d9f27d4a11b"   // fisso per sempre
+                // Prima l'installer usava l'icona di default di Compose. Stesso disegno di rememberAppIcon() (§6.1),
+                // renderizzato una volta a 16/32/48/256 px: se cambia AppIcon.kt va rigenerato.
+                iconFile.set(project.file("src/main/packaging/icon.ico"))
             }
         }
     }
 }
 ```
 
-Comandi (da riportare in `CLAUDE.md`): `.\gradlew.bat compileKotlin`, `.\gradlew.bat test`, `.\gradlew.bat run`, `.\gradlew.bat packageDistributionForCurrentOS`. Per i test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input del task).
+`src/main/packaging/icon.ico` (committato) è l'icona di MSI, EXE, collegamenti e *Impostazioni > App*: lo stesso disegno di `rememberAppIcon()` (§6.1) renderizzato con `ImageComposeScene` a 16, 32 e 48 px (BMP 32 bit con alfa) e a 256 px (PNG). È stato generato una volta sola da un test temporaneo non committato; se cambia `AppIcon.kt` va rigenerato allo stesso modo.
+
+Comandi (riportati in `CLAUDE.md`): `.\gradlew.bat compileKotlin`, `.\gradlew.bat test`, `.\gradlew.bat run`, `.\gradlew.bat packageDistributionForCurrentOS` (MSI ed EXE in `build/compose/binaries/main/{msi,exe}`), `.\gradlew.bat suggestModules`. Per i test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input del task).
 
 ### 2.6 Gradle wrapper
 
@@ -340,7 +356,7 @@ Nota: il percorso è sempre `~/.protocollo17/logs` (`C:\Users\<utente>\.protocol
 
 ### 2.8 Albero dei package (main)
 
-Legenda proprietari: `[WP0]` file completo scritto da WP0; `[WP0→WPn]` stub di WP0 implementato da WPn; `[WPn]` file creato da WPn.
+Legenda proprietari: `[WP0]` file completo scritto da WP0; `[WP0→WPn]` stub di WP0 implementato da WPn; `[WPn]` file creato da WPn; `[§8.10]` file aggiunto nell'integrazione finale.
 
 ```
 it/prime/protocollo17/
@@ -438,14 +454,17 @@ it/prime/protocollo17/
     │   ├── TerminalSessionService.kt         [WP0→WP5]  implementa CommandRunner
     │   └── AppWindows.kt                     [WP0→WP6]
     ├── theme/  Color.kt, Type.kt, Shapes.kt, Theme.kt, SemanticColors.kt, PreviewTheme.kt          [WP6]
-    ├── model/  ResultView.kt, ResultViewMapper.kt, FieldLabels.kt   (condivisi: Console, Journal, dialog) [WP6]
+    ├── model/  ResultView.kt, ResultViewMapper.kt, FieldLabels.kt, AttemptTexts.kt
+    │           (condivisi: Console, Journal, dialog; AttemptTexts = testi di un tentativo del journal)      [WP6]
     ├── components/  Scrollbars.kt, TooltipIconButton.kt, CopyIconButton.kt, SectionLabel.kt,
     │                StatusDot.kt, CommandLetterChip.kt, KeyValueTable.kt, SettingsCard.kt,
-    │                SwitchRow.kt, EnumDropdown.kt, NumberTextField.kt, ResolveAttemptDialog.kt    [WP6]
+    │                SwitchRow.kt, EnumDropdown.kt, NumberTextField.kt, ResolveAttemptDialog.kt,
+    │                AppSnackbar.kt (NoticeTone e snackbar con icona e colore del tono)            [WP6]
     ├── util/  ObserveAsEvents.kt, StopOnEscape.kt, DisposeSafely.kt, FilePickers.kt,
     │          Formatters.kt, DesktopActions.kt, WindowGeometrySupport.kt, GeometryRules.kt,
     │          AppIcon.kt                                                                          [WP6]
     │          FailureMessages.kt                                                             [WP0→WP6]
+    │          AppVersion.kt (versione da app-version.properties, §2.5)                         [§8.10]
     ├── windows/  MainWindow.kt, SecondaryWindows.kt, OptionsWindow.kt, TrafficLogWindow.kt,
     │             JournalWindow.kt, SimulatorWindow.kt                                             [WP6]
     └── screen/
@@ -468,7 +487,8 @@ it/prime/protocollo17/
 Rispecchia i package di main (`src/test/kotlin/it/prime/protocollo17/…`):
 
 ```
-architecture/   Ecr17IsolationTest.kt, PresentationBoundaryTest.kt                        [WP0]
+architecture/   Ecr17IsolationTest.kt, PresentationBoundaryTest.kt,
+                SourceImports.kt (sorgenti e import letti dai test architetturali)        [WP0]
                 NoCommandTimeoutTest.kt (M8)
 ecr17/testing/  Frames.kt (costanti byte comuni: SOLO costanti e LrcMode.compute)          [WP0]
 ecr17/testing/  ScriptedTransport.kt                                                       [WP3]
@@ -485,15 +505,18 @@ domain/util/    AmountParserTest, RequestFactoryTest, GAssessmentTest           
 data/…          SettingsRepositoryTest, JournalStoreTest, JournalRepositoryImplTest,
                 JournalMapperTest, TrafficFormatterTest, TrafficRecorderTest,
                 PosTerminalRepositoryImplTest, SimulatorConfigMapperTest,
-                SimulatorControllerImplTest, SingleInstanceGuardTest                       [WP5]
+                SimulatorControllerImplTest, SingleInstanceGuardTest, ShutdownWatchdogTest [WP5]
+data/testing/   FakeJournalRepository.kt, OutcomeFixtures.kt                               [WP5]
 presentation/state/ TerminalSessionServiceTest                                             [WP5]
 presentation/state/ CloseGuardTest                                                         [WP0]
 integration/    UnknownRecoveryIntegrationTest (simulatore + servizio + journal reale)    [WP5]
-presentation/   ScreenModelTestSupport.kt, FakeCommandRunner.kt,
+presentation/   ScreenModelTestSupport.kt, FakeCommandRunner.kt, UiFixtures.kt,
+                ScreenRenderSmokeTest (schermate composte alla dimensione minima),
                 console/ConsoleViewModelTest, model/ResultViewMapperTest,
                 options/OptionsViewModelTest, traffic/TrafficLogViewModelTest,
                 journal/JournalViewModelTest, simulator/SimulatorViewModelTest,
                 state/AppWindowsTest, util/GeometryRulesTest, util/FailureMessagesTest     [WP6]
+presentation/util/ AppVersionTest (versione della risorsa = version di Gradle)            [§8.10]
 ```
 
 `Frames.kt` è di WP0 perché lo usano i test di WP1 (`PanMaskerTest`), WP2 (`ResponseParserTest`), WP3 e WP4: contiene solo costanti e `app()` costruito con `LrcMode.compute` (WP0), mai `Hex.parse` (stub WP1).
@@ -1027,6 +1050,12 @@ internal class FieldWriter(capacity: Int) {
     fun padStart(field: RequestField, value: String, width: Int, pad: Char)
     /** Solo cifre 0-9, left-pad '0'. ⇒ NotDigits / FieldOverflow. */
     fun digits(field: RequestField, value: String, width: Int)
+    /**
+     * Campo obbligatorio mancante: ValidationError.Required e [width] riempitivi, così il layout resta della
+     * lunghezza giusta. Il chiamante decide che cosa è "mancante": il codice di preautorizzazione vuoto o di soli
+     * spazi è Required e non NotDigits (altrimenti diventerebbe "000000000", una preautorizzazione inesistente).
+     */
+    fun required(field: RequestField, width: Int, pad: Char = '0')
     /** 8 cifre in centesimi: < 0 ⇒ NegativeAmount; > 99_999_999 ⇒ FieldOverflow. */
     fun amount(cents: Long)
     /** Testo libero: solo 0x20..0x7E (NonAscii con indice), larghezza 128, ALLINEATO A DESTRA. */
@@ -2166,7 +2195,10 @@ data class SimulatorConfig(
     val fault: SimFault = SimFault.NONE,
     /** true: il guasto vale solo per P X S p i c H C; i comandi di servizio funzionano sempre. */
     val faultOnlyFinancial: Boolean = true,
-    /** Chiude il TCP dopo ogni transazione (comportamento "Nexi" della LESSON). */
+    /**
+     * Chiude il TCP dopo ogni transazione (comportamento "Nexi" della LESSON). Non dopo `E` (E0/E1 preparano la
+     * procedura successiva, che l'ECR invia sulla stessa connessione, §3.23 punto 6) né dopo un NAK per LRC.
+     */
     val closeAfterTransaction: Boolean = false,
     /** Se l'ACK dell'ECR all'esito manca o non rispetta ackRule entro resultRetransmitDelayMs, reinvia l'esito (max resultRetransmitMax). */
     val retransmitResultIfNoValidAck: Boolean = false,
@@ -2256,13 +2288,15 @@ Tempi: ACK dopo `ackDelayMs`; per i comandi con esito, progress dopo `progressDe
 | `C` | `C` 44 B: `"00"` + totale POS 16 + totale host 16 (uguali), poi azzera i totali |
 | `T` | `T` 34 B: `"00"` + totale POS 16 + `"000000"` |
 | `G` | l'ultimo payload di esito inviato, **identico**; se non c'è: `E` KO `"NESSUNA OPERAZIONE"` |
-| `E` | solo ACK; `'1'` arma la stampa su ECR **per la prossima procedura** (poi si disarma, A§4.3.6) |
+| `E` | solo ACK; `'1'` arma la stampa su ECR **per la prossima procedura** (poi si disarma, A§4.3.6); con `closeAfterTransaction` la connessione resta aperta, perché la procedura armata arriva sulla stessa connessione |
 | `R` | solo ACK; con pos 11 = `'1'` invia 3 righe `S` dell'ultimo scontrino, l'ultima con `7D`×6 + `1B` |
 | altro codice | NAK |
 
 Totale POS: + importo per `P`/`X`/`c` approvati; − importo dell'ultimo approvato per `S` approvato. Righe `S` (stampa armata): `"TID0S"` + 4 righe ("SIMULATORE P17", "PAGAMENTO", "IMPORTO EUR x,xx", "ESITO …"), l'ultima con la sentinella; prima o dopo l'esito secondo `receiptAfterResult`.
 
 ACK dell'ECR: dopo ogni frame applicativo inviato il simulatore registra in `controlFramesReceived` l'ACK/NAK ricevuto. Con `retransmitResultIfNoValidAck`, se entro `resultRetransmitDelayMs` non arriva un ACK con l'LRC di `ackRule`, reinvia l'esito (al massimo `resultRetransmitMax` volte): è lo scenario T3/I-7 (L§7.2). Un NAK all'esito provoca sempre il reinvio. **Il reinvio è visibile all'ECR solo se arriva prima della fine del suo drain**: con il drain di default (100 ms) e la connessione per comando, un reinvio a 1 s finisce su un socket già chiuso. I test (IT-17) e la sonda di §9.2 punto 4 devono quindi alzare il drain dell'ECR oltre il ritardo di reinvio.
+
+`closeAfterTransaction`: la connessione si chiude dopo l'ultimo passo di ogni comando con esito e di `R`, mai dopo `E` (E0 o E1) né dopo il NAK a una richiesta con LRC errato (SR-21, IT-27). I guasti `DROP_*` chiudono comunque.
 
 ### 4.5 Guasti e reazione attesa dell'ECR
 
@@ -2784,23 +2818,36 @@ interface TrafficRepository {
 
 #### 5.4.2 Formato del file (`data/local/traffic/TrafficFormatter.kt`) [WP5]
 
-Un file al giorno, `traffic/yyyy_MM_dd-p17-traffic.txt` (stessa forma di `2026_03_18-iaedll-log.txt` della DLL). Timestamp `dd/MM/yyyy-HH:mm:ss-SSS` in ora locale. I frame usano **esattamente** la forma della DLL (hex minuscolo, ogni byte seguito da uno spazio), così le tracce si confrontano con `diff` dopo aver tolto il timestamp; le altre righe usano un prefisso a 7 caratteri.
+Un file al giorno, `traffic/yyyy_MM_dd-p17-traffic.txt` (stessa forma di `2026_03_18-iaedll-log.txt` della DLL). Timestamp `dd/MM/yyyy-HH:mm:ss-SSS` in ora locale. I frame usano **esattamente** la forma della DLL (hex minuscolo, ogni byte seguito da uno spazio, quindi anche l'ultimo), così le tracce si confrontano con `diff` dopo aver tolto il timestamp; le altre righe usano un prefisso a 7 caratteri (`Info   `, `Warn   `, `Error  `, `Discard`).
+
+Righe prodotte da `TrafficFormatter.toFileLines` (catturate col simulatore in `NO_ACK` e opzioni Ingenico di default; indirizzo, numero di scambio e orari ritoccati, frame lunghi accorciati con `…`):
 
 ```
 14/10/2026-09:35:05-399: Info   :#12 P avviato verso 192.168.1.131:5577 (INGENICO stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/120000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off)
-14/10/2026-09:35:05-399: Info   :#12 link Connected 192.168.1.131:5577
+14/10/2026-09:35:05-399: Info   :#12 fase PREPARING
+14/10/2026-09:35:05-399: Info   :#12 fase CONNECTING
+14/10/2026-09:35:05-400: Info   :link Connecting 192.168.1.131:5577
+14/10/2026-09:35:05-451: Info   :link Connected 192.168.1.131:5577
 14/10/2026-09:35:05-452: Info   :#12 fase SENDING invio 1
 14/10/2026-09:35:05-453: Data Tx:02 30 30 30 30 30 30 30 30 30 50 30 … 30 30 03 2f
+14/10/2026-09:35:05-453: Info   :#12 fase AWAITING_ACK
 14/10/2026-09:35:07-455: Warn   :#12 IMPLICIT_GO_AHEAD ACK non ricevuto entro 2000 ms: attendo l'esito senza reinviare
+14/10/2026-09:35:07-455: Info   :#12 fase IMPLICIT_GO_AHEAD
+14/10/2026-09:35:07-455: Info   :#12 fase AWAITING_RESULT
 14/10/2026-09:35:08-032: Data Rx:01 4f 50 45 52 41 5a 49 4f 4e 45 20 49 4e 20 43 4f 52 53 4f 20 04
 14/10/2026-09:35:08-032: Info   :#12 progress "OPERAZIONE IN CORSO "
 14/10/2026-09:35:14-280: Data Rx:02 30 32 35 37 35 37 33 33 30 45 30 30 2a 2a … 03 21
-14/10/2026-09:35:14-280: Info   :#12 esito 'E' atteso, LRC 21 ok (stx)
+14/10/2026-09:35:14-280: Info   :#12 Frame 'E', LRC 21 ok (stx)
 14/10/2026-09:35:14-299: Data Tx:06 03 7a
-14/10/2026-09:35:14-400: Info   :#12 link Closed LOCAL
+14/10/2026-09:35:14-299: Info   :#12 fase RESULT_RECEIVED
+14/10/2026-09:35:14-299: Info   :#12 fase DRAINING
+14/10/2026-09:35:14-400: Info   :#12 fase COMPLETED
+14/10/2026-09:35:14-400: Info   :link Closed LOCAL
 14/10/2026-09:35:14-400: Info   :#12 P terminato APPROVED
 14/10/2026-09:40:01-002: Discard:ff 00 | NOISE
 ```
+
+Regole che l'esempio mostra: ogni cambio di fase ha la sua riga `fase …` (`SENDING` con il numero d'invio); le righe `link …` non portano `#id` (lo stato del link non appartiene a uno scambio); sotto ogni `Data Rx` di un frame **applicativo** c'è una riga `Info` con codice e verifica LRC (`Frame 'E', LRC 21 ok (stx)`, oppure il motivo del rifiuto), mentre ACK, NAK e progress non ne hanno; `Discard` porta i byte e, dopo `| `, il `DiscardReason`. Le righe che non sono frame né scarti hanno il prefisso della gravità: `Warn` per gli avvisi, gli esiti `DECLINED`/`NOT_SENT`/`REFUSED` e un link chiuso non da noi (`Closed` diverso da `LOCAL`); `Error` per gli esiti `FAILED`/`UNKNOWN`, `ConnectFailed` e gli avvisi `JOURNAL_WRITE_FAILED`, `POSSIBLE_LOST_RESULT`, `POSSIBLE_DUPLICATE`, `EARLY_RESULT`. L'export della finestra Log (`exportLines`) produce le stesse righe dalla voce già formattata.
 
 ```kotlin
 package it.prime.protocollo17.data.local.traffic
@@ -3133,7 +3180,7 @@ Ogni finestra è un vero `Window` dichiarato nello scope `application {}` (mai a
 - **Geometria persistita in continuo**: `rememberPersistedWindowState` osserva `snapshotFlow { state.size to state.position to state.placement }.debounce(500)` e chiama `AppWindows.saveGeometry`. Così la geometria delle secondarie è salvata anche quando la chiusura della principale le distrugge senza passare dal loro `onCloseRequest`; il `onCloseRequest` della principale fa comunque un ultimo salvataggio della propria.
 - Le finestre secondarie aperte alla chiusura vengono riaperte all'avvio (`ui.openWindows`).
 - Lo stato condiviso (traffico, journal, collegamento, comando in corso, cronologia) vive in singleton (`TrafficRepository`, `JournalRepository`, `CommandRunner`, `SimulatorController`); i ViewModel delle finestre lo osservano soltanto.
-- **Icona** di tutte le finestre: `rememberAppIcon()` (`presentation/util/AppIcon.kt`), un `Painter` che disegna un quadrato arrotondato `Indigo600` con il glifo `Icons.Filled.PointOfSale` in bianco (`VectorPainter` disegnato con `ColorFilter.tint(Color.White)`). Il glifo nudo, con la tinta non specificata, risulterebbe nero e quasi invisibile sulla barra del titolo e sulla taskbar scure. Nessun PNG da produrre in v1.
+- **Icona** di tutte le finestre: `rememberAppIcon()` (`presentation/util/AppIcon.kt`), un `Painter` che disegna un quadrato arrotondato `Indigo600` con il glifo `Icons.Filled.PointOfSale` in bianco (`VectorPainter` disegnato con `ColorFilter.tint(Color.White)`). Il glifo nudo, con la tinta non specificata, risulterebbe nero e quasi invisibile sulla barra del titolo e sulla taskbar scure. A runtime nessun PNG: le finestre disegnano il `Painter`. L'installer usa invece `src/main/packaging/icon.ico`, lo stesso disegno renderizzato una volta (§2.5).
 
 ### 6.2 Finestra principale: layout
 
@@ -3941,7 +3988,7 @@ Le scelte vengono da `SimCatalog` (dominio, §5.6): la presentation non importa 
 
 - Le scorciatoie Ctrl+, / L / J / Shift+S sono acceleratori del `MenuBar` della finestra principale (`Item(…, shortcut = KeyShortcut(Key.L, ctrl = true))`); le finestre secondarie hanno un proprio `onKeyEvent` che chiama `AppWindows.open` per le stesse combinazioni.
 - Ctrl+Invio, Esc, F5, Ctrl+frecce nel `onKeyEvent` della finestra principale (controllo `KeyEventType.KeyDown` per primo; Esc fuori dal ramo Ctrl, restituisce `false`). Il filtro "dialog aperto" sta nel Root della Console (`escapeCancels`, `shortcutsEnabled`, §6.5): la finestra inoltra sempre, il Root decide. Poiché un `OutlinedTextField` può consumare l'Invio, `CommandFormCard` aggiunge `Modifier.onPreviewKeyEvent { ctrl+Enter ⇒ onAction(RunSelected); true }`: un solo effetto per pressione, verificato a mano (§7.8).
-- `MenuBar` principale: **File** (Apri cartella dati, Esci) · **Comandi** (Esegui comando selezionato — Ctrl+Invio, Annulla comando — Esc, Stato terminale — F5, Test connessione; disabilitati durante un comando salvo Annulla) · **Finestre** (Opzioni, Log traffico, Journal, Simulatore) · **Strumenti** (Avvia simulatore / Ferma simulatore, Usa simulatore come terminale, Ripristina terminale ⇒ `ConsoleAction.StartSimulator/StopSimulator/UseSimulatorAsTarget/RestoreTerminal`) · **Aiuto** (Informazioni: versione, cartella dati, crediti del `NOTICE`). Il menu è dichiarato in `MainWindow`, sopra il `Navigator`, e non vede il `ConsoleViewModel`: le voci di *Comandi* e *Strumenti* inviano `Shortcut` sul `ShortcutBus` (`RunSelected`, `StopCurrentJob`, `PingStatus`, `TestConnection`, `StartSimulator`, `StopSimulator`, `UseSimulatorAsTarget`, `RestoreTerminal`) e il Root della Console le inoltra (§6.5); le voci *Finestre* chiamano direttamente `AppWindows.open`. L'abilitazione delle voci legge `CommandRunner.state` e `SimulatorController.status` con `koinInject`.
+- `MenuBar` principale: **File** (Apri cartella dati, Esci) · **Comandi** (Esegui comando selezionato — Ctrl+Invio, Annulla comando — Esc, Stato terminale — F5, Test connessione; disabilitati durante un comando salvo Annulla) · **Finestre** (Opzioni, Log traffico, Journal, Simulatore) · **Strumenti** (Avvia simulatore / Ferma simulatore, Usa simulatore come terminale, Ripristina terminale ⇒ `ConsoleAction.StartSimulator/StopSimulator/UseSimulatorAsTarget/RestoreTerminal`) · **Aiuto** (Informazioni: versione da `presentation/util/AppVersion`, che legge `app-version.properties` generato da `processResources` con la `version` di Gradle; cartella dati; crediti del `NOTICE`). Il menu è dichiarato in `MainWindow`, sopra il `Navigator`, e non vede il `ConsoleViewModel`: le voci di *Comandi* e *Strumenti* inviano `Shortcut` sul `ShortcutBus` (`RunSelected`, `StopCurrentJob`, `PingStatus`, `TestConnection`, `StartSimulator`, `StopSimulator`, `UseSimulatorAsTarget`, `RestoreTerminal`) e il Root della Console le inoltra (§6.5); le voci *Finestre* chiamano direttamente `AppWindows.open`. L'abilitazione delle voci legge `CommandRunner.state` e `SimulatorController.status` con `koinInject`.
 
 ### 6.16 Modulo Koin (`di/AppModule.kt`) [WP0]
 
@@ -4019,14 +4066,14 @@ private val log = LoggerFactory.getLogger("Protocollo17.Main")
 fun main() {
     Thread.setDefaultUncaughtExceptionHandler { t, e -> log.error("Eccezione non gestita sul thread '{}'", t.name, e) }
     val dirs = AppDirs.default().ensure()
-    logBanner(dirs)                                   // JVM, OS, cartella dati, file di log
+    logBanner(dirs)                                   // versione (AppVersion.current), JVM, OS, cartelle
     if (SingleInstanceGuard.acquire(dirs.lockFile) is SingleInstanceGuard.Attempt.HeldByOther) {
         showAlreadyRunningDialog()                    // JOptionPane in runCatching
         exitProcess(0)
     }
     runCatching { startKoin { modules(appModule) } }.onFailure { log.error("Avvio Koin fallito", it); throw it }
     val koin = GlobalContext.get()
-    val recovered = runBlocking(Dispatchers.IO) { koin.get<JournalRepository>().recoverOnStartup() }
+    val recovered = recoverJournalOrExit()
     koin.get<SimulatorController>()                   // crea il controller (autoStart se impostato)
     val watchdog = ShutdownWatchdog()
     try {
@@ -4046,21 +4093,40 @@ private fun runUi(onBeforeExit: () -> Unit, recovered: List<JournalEntry>) = app
 }
 
 /**
+ * Recupero del journal all'avvio (chiude come UNKNOWN i tentativi interrotti). Se il journal non è leggibile l'app
+ * NON parte: partire senza sapere quali pagamenti sono rimasti senza esito toglierebbe il blocco (M6).
+ */
+private fun recoverJournalOrExit(): List<JournalEntry> = try {
+    runBlocking(Dispatchers.IO) { GlobalContext.get().get<JournalRepository>().recoverOnStartup() }
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    log.error("Recupero del journal fallito: l'app non parte", e)
+    runCatching { JOptionPane.showMessageDialog(null, "Il journal dei tentativi non è leggibile (…)", …, ERROR_MESSAGE) }
+    runCatching { SingleInstanceGuard.release() }
+    exitProcess(1)
+}
+
+/**
  * Ogni passo nel proprio runCatching. Ordine (skill di-koin + embedded-server): comando in corso (il journal
  * scrive UNKNOWN/NOT_SENT finché il simulatore è ancora vivo), simulatore (la porta si libera prima di chiudere
  * i client), client, log, journal, settings, lock.
  */
 private fun closeAppResources() {
-    val koin = GlobalContext.get()
+    val koin = runCatching { GlobalContext.get() }.getOrNull() ?: return
     runCatching { koin.get<TerminalSessionService>().shutdown(timeoutMs = 3_000) }
+        .onFailure { log.warn("Chiusura del comando in corso non riuscita: {}", it.message) }
     runCatching { koin.get<SimulatorController>().close() }
     runCatching { koin.get<Ecr17Client>().close() }
     runCatching { koin.get<TrafficRecorder>().close() }
     runCatching { koin.get<JournalRepository>().close() }
     runCatching { koin.get<SettingsRepository>().close() }
     runCatching { SingleInstanceGuard.release() }
+    log.info("Protocollo17ComposeDesktop: chiusura completata")
 }
 ```
+
+`recoverJournalOrExit` gira prima della UI. **Journal illeggibile all'avvio ⇒ l'app non parte** (decisione dell'utente, 2026-10-16): se `recoverOnStartup` lancia, cioè il file c'è ma non si riesce a leggerlo (file bloccato, permessi, errore del disco), compare il dialog d'errore (testo completo nel file: journal non leggibile, l'app non parte per non perdere i pagamenti da risolvere, dove guardare), si rilascia il lucchetto e si esce con `exitProcess(1)`. Non sono errori: il file mancante (si parte con il journal vuoto) e le righe corrotte, che `JournalStore` salva in `journal.jsonl.corrupt-<millis>` senza bloccare l'avvio (§5.3.3). `closeAppResources` è difensiva: senza contesto Koin (avvio fallito prima di `startKoin`) non fa nulla, un fallimento di `shutdown` finisce nel log come warning invece di essere ingoiato, e l'ultima riga del log conferma la chiusura.
 
 `MainWindow(onBeforeExit: () -> Unit, startupRecovered: List<JournalEntry>, onExit: () -> Unit)` (`presentation/windows/MainWindow.kt`): non vede `ShutdownWatchdog` (`data.local.system`, vietato alla presentation da §2.10), riceve solo la lambda. `Window(onCloseRequest = …, title = "Protocollo17ComposeDesktop", icon = rememberAppIcon(), state = rememberPersistedWindowState("MAIN", WindowSpec(1280f, 800f, 960f, 600f), windows), onKeyEvent = …)` con `MenuBar`. In `LaunchedEffect(density)`: `window.minimumSize` dal minimo e `PickerOwner.window = window`. `onCloseRequest`: se `closeNeedsConfirmation(runner.state.value)` ⇒ dialog "Un comando finanziario è in corso: chiudendo, l'esito resterà SCONOSCIUTO e sarà registrato nel journal. Chiudere comunque?"; poi (o subito se non serve) `onBeforeExit()`, salvataggio finale della geometria, `window.isVisible = false`, `onExit()`. Se `startupRecovered` contiene tentativi `UNKNOWN`, all'avvio una notifica "All'ultimo avvio n operazioni sono rimaste senza esito: pagamenti bloccati finché non le risolvi". Un `LaunchedEffect` raccoglie `SimulatorController.status`: ogni passaggio a `Failed` (anche dell'avvio automatico) ⇒ `AppNotifications.error("Simulatore", "Porta 15577 già in uso: cambiala nella finestra Simulatore", openWindow = SIMULATOR)`. Il contenuto: `AppTheme { Navigator(MainScreen(), key = "nav-main") { Box { CurrentScreen(); SnackbarHost(…) } } }` con la raccolta di `AppNotifications` sulla snackbar (sostituisce, non accoda; azione "Apri" se `openWindow != null`, che chiama `AppWindows.open` e quindi porta in primo piano una finestra già aperta).
 
@@ -4210,7 +4276,7 @@ class ScriptedTransport(private val scope: CoroutineScope, private val wallClock
 | `LrcModeTest` | stringa vuota nelle 4 modalità `7F/7E/7C/7D`; `"A"` `3E/3F/3D/3C`; `"AB"` `7C/7D/7F/7E`; riferimento `00 7F 55 AA 5A 10` `B5/B4/B6/B7`; `"12345678P0"` `17/16/14/15`; `"123456780P0000065000"` `14/15/17/16` (A§9.1); `"123456780s"` `34/35/37/36` (A§3.6a); `"000000000s"` `3C/3D/3F/3E` (L§13.4); proprietà `stx = std^01`, `noext = std^03`, `stx_noext = std^02` su payload casuali; `fromWireName`: `"STX"` e `" stx "` ⇒ STX, `"sxt"`, `"stx-noext"`, `""` ⇒ null (L§13.7) |
 | `ControlLrcRuleTest` | `WIRE` ⇒ `06 03 7A` / `15 03 69` in ogni modalità; `SAME_AS_APP` std `79/6A`, stx `78/6B`, noext `7A/69`, stx_noext `7B/68` (A§9.2, L§13.3) |
 | `FrameCodecTest` | tutte le righe di A§9.3 (encode AB std `02 41 42 03 7C`; round trip in ogni modalità; LRC corrotto `HELLO` `3D`→`C2` = Application `validLrc=false`; `[06]`, `[15]`; `decode(encodeControl)`; `[06 00]`, `[06 03 FF]`, `[15 99 42]`; vuoto; `[01]`; progress `"ELABORAZIONE...     "`; STX senza ETX; STX ETX senza LRC; `[99 00]`; byte dopo LRC; concatenati; SOH senza EOT); frame reali A§9.8: P [1] LRC `2F`, R [37] LRC `2C`, `s` TID zero in stx = `02 30…73 03 3D` |
-| `FrameSplitterTest` | L§13.3 seconda tabella: `06 03 7A` ⇒ WIRE; `06 03 78` ⇒ SAME_AS_APP; `06 03 00` ⇒ MISMATCH (tollerante) / Discarded 1 byte (rigido); `06 FF 06 03 7A`+esito ⇒ Discarded `06 FF`, ACK, esito; `06`+`02…` ⇒ Control BARE ed esito integro; **`06 03`+`02…` ⇒ Control(ACK, BARE) di 2 byte ed esito integro** (prima: MISMATCH che consumava lo STX); `06 03` da solo ⇒ attende; `flushBareControl` con solo `06` ⇒ ACK BARE; **asimmetria NAK**: `15`+`02…` ⇒ Discarded(1, AMBIGUOUS_NAK) ed esito integro; `15 03`+`02…` ⇒ Discarded(2, AMBIGUOUS_NAK) ed esito integro; `15 03 00` ⇒ Discarded(3, AMBIGUOUS_NAK) sia `TOLERANT` sia `STRICT`; `15 03 69` e `15 03 6B` ⇒ Control(NAK); `flushBareControl` con solo `15` o `15 03` ⇒ Discarded(AMBIGUOUS_NAK); LRC uguale a `02` (`"123456780E00"+"0"*60` in std, A§3.1) non interpretato; STX annidato ⇒ RESYNC; rumore consecutivo accorpato; OVERSIZED; righe reali [2][3][4] concatenate ⇒ ACK, Progress, Application con `matchingModes == {STX}`; **equivalenza** chunk unico vs byte per byte sulla stessa sequenza (comprese le nuove righe) |
+| `FrameSplitterTest` | L§13.3 seconda tabella: `06 03 7A` ⇒ WIRE; `06 03 78` ⇒ SAME_AS_APP; `06 03 00` ⇒ MISMATCH (tollerante) / Discarded 1 byte (rigido); `06 FF 06 03 7A`+esito ⇒ Discarded(`06`, CONTROL_WITHOUT_ETX), Discarded(`FF`, NOISE), ACK, esito (lo stesso per `15 FF`+ACK); `06`+`02…` ⇒ Control BARE ed esito integro; **`06 03`+`02…` ⇒ Control(ACK, BARE) di 2 byte ed esito integro** (prima: MISMATCH che consumava lo STX); `06 03` da solo ⇒ attende; `flushBareControl` con solo `06` ⇒ ACK BARE; **asimmetria NAK**: `15`+`02…` ⇒ Discarded(1, AMBIGUOUS_NAK) ed esito integro; `15 03`+`02…` ⇒ Discarded(2, AMBIGUOUS_NAK) ed esito integro; `15 03 00` ⇒ Discarded(3, AMBIGUOUS_NAK) sia `TOLERANT` sia `STRICT`; `15 03 69` e `15 03 6B` ⇒ Control(NAK); `flushBareControl` con solo `15` o `15 03` ⇒ Discarded(AMBIGUOUS_NAK); LRC uguale a `02` (`"123456780E00"+"0"*60` in std, A§3.1) non interpretato; STX annidato ⇒ RESYNC; rumore consecutivo accorpato; OVERSIZED; righe reali [2][3][4] concatenate ⇒ ACK, Progress, Application con `matchingModes == {STX}`; **equivalenza** chunk unico vs byte per byte sulla stessa sequenza (comprese le nuove righe) |
 | `HexTest` | `spaced` maiuscolo e minuscolo con spazio finale (`"06 03 7a "`); `parse` tollerante; `printable` con `<STX>`/`<ETX>`/`<1B>` |
 | `PanMaskerTest` | `maskForDisplay("4111111111111111")` = `"************1111"`; `("123")` = `"****"`; `("492917******0114")` = `"******0114"` (A§9.10); `maskFixedWidth("000558278******4768")` = `"***************4768"`; `maskApplicationPayload(E22_CLEAR)` maschera solo pos 13-31; `E4` (KO) invariato; `e`, `c`, `v` approvati mascherati; **`i` con esito `01` (`I75_KO_CLEAR`) mascherato** (nessun ramo KO, A§4.5.4); riga `S` `RECEIPT_PAN` ⇒ `4111111111111111` non compare; **riga `S` (e codice sconosciuto) con il PAN spezzato da 0x7F** ⇒ mascherato con lo 0x7F al suo posto, sia in `maskApplicationPayload` (uguale a `ReceiptLine.raw` del parser) sia in `maskFrame`; `maskDigitRuns` (byte e stringa, stesso risultato) su un frammento con il PAN spezzato da 0x7F, frame senza STX e coda oltre l'LRC ⇒ mascherati; `s` e `T` invariati (le loro lunghe sequenze di cifre restano); `maskDigitRuns` su un frammento `E22_CLEAR` scartato ⇒ nessuna sequenza di 13+ cifre in chiaro; 12 cifre invariate; `maskFrame` lascia l'LRC originale |
 
@@ -4261,7 +4327,8 @@ Profilo `Frames.fast` (stx, `WIRE`, tollerante, `IMPLICIT_GO_AHEAD`) salvo dove 
 | SE-28 | `progress durante l'handshake: ACK implicito` | `PRG`, `ACKW`, `E4` | ackMode PROGRESS_BEFORE_ACK; fase ACKNOWLEDGED dopo il progress; l'ACK successivo accettato senza warning | §3.21 |
 | SE-29 | `deadline esito non estesa dai progress` | `ACKW`, `PRG` ogni 50 ms | `ResponseTimeout` a 200 ms virtuali dall'ingresso in AWAITING_RESULT | A§5.2 |
 | SE-30 | `NAK tardivo dopo il go-ahead: reinvio` | 1°: `NAKW` a 60 ms; 2°: `ACKW`+`E4` | 2 invii; Success; `naksReceived == 1`; nessun `POSSIBLE_DUPLICATE` | §3.21 |
-| SE-31 | `ACK tardivo dopo il go-ahead` | `ACKW` a 60 ms, `E4` a 100 ms | `LATE_ACK`; fase ACKNOWLEDGED registrata; deadline non estesa | §3.21 |
+| SE-31 | `ACK tardivo dopo il go-ahead` | `ACKW` a 60 ms, `E4` a 100 ms | `LATE_ACK`; fase ACKNOWLEDGED registrata | §3.21 |
+| SE-31b | `ACK tardivo, deadline non estesa` | `ACKW` a 60 ms, nessun esito | `ResponseTimeout(200)` a 240 ms virtuali: la deadline parte dal go-ahead (40 + 200), non dall'ACK tardivo (60 + 200) | §3.21 |
 | SE-32 | `solo ACK: E1 confermato` / `con NAK` / `timeout` | `ACK_ONLY` E1: `ACKW`; `NAKW` poi `ACKW`; silenzio | Success null; 2 invii; `AckTimeout(4)` | A§9.6 |
 | SE-33 | `ristampa verso ECR raccoglie le righe S` | `R(ECR)` → `ACKW`, `RECEIPT`, `RECEIPT_END` | Success; 2 righe in trace | §3.21 |
 | SE-34 | `onPhase(SENDING) attesa prima di ogni scrittura` | `NAKW`, poi `ACKW`+`E4` | ordine registrato: phase(SENDING,1) < write1 < phase(SENDING,2) < write2 | M3 |
@@ -4278,7 +4345,7 @@ Profilo `Frames.fast` (stx, `WIRE`, tollerante, `IMPLICIT_GO_AHEAD`) salvo dove 
 | SE-45 | `RETRANSMIT: timeout poi NAK fino al limite` | `RETRANSMIT`; 1° silenzio; 2°-5°: `NAKW` | Failure `Nak`; `timeoutRetransmissions == 1` (il client la mappa a `Unknown`, CL-21) | §3.23 |
 | SE-46 | `RETRANSMIT: timeout poi ACK ed esito` | `RETRANSMIT`; 1° silenzio; 2°: `ACKW`+`E22` | Success; 2 invii; warning `POSSIBLE_DUPLICATE` | L§6.5 p.8 |
 | SE-47 | `U stantio prima dell'ACK, poi NAK: il NAK vale ancora` | 1°: app(`U34`) a 5 ms, `NAKW` a 10 ms; 2°: `ACKW`+`E22` | ACK inviato al `U`; `UNEXPECTED_REPLY`; 2 invii; Success | §3.21 |
-| SE-48 | `errore di 1 bit valido solo in std rifiutato per un pagamento` | P, `ACCEPT_ANY_MODE`; `ACKW`, `app(E4_FLIPPED_12, STX)` con LRC 46 (valido solo in std), poi `E4` valido a 50 ms | NAK + `APP_LRC_INVALID` sul frame alterato; Success E4 (DECLINED); mai APPROVED | §3.16 |
+| SE-48 | `errore di 1 bit valido solo in std rifiutato per un pagamento` | P, `ACCEPT_ANY_MODE`; `ACKW`, `app(E4_FLIPPED_12, STD)` con LRC 46 (valido solo in std; in stx sarebbe 47, valido nella modalità configurata), poi `E4` valido a 50 ms | NAK + `APP_LRC_INVALID` sul frame alterato; Success E4 (DECLINED); mai APPROVED | §3.16 |
 | SE-49 | `orfano della famiglia esiti durante un comando di servizio` | `s` → `ACKW`, `E22` a 5 ms, risposta `s` a 20 ms | ACK all'`E22`; `UNEXPECTED_REPLY` + `POSSIBLE_LOST_RESULT` con payload mascherato; Success `s` | M4 |
 | SE-50 | `drain con tetto: frame con LRC errato ripetuto all'infinito` | `ACKW`, `E22`, poi un frame con LRC errato ogni 15 ms | Success E22; drain chiuso al tetto (≤ max(5 000, 4 × finestra) ms o 20 frame); `DRAIN_INTERRUPTED` | §3.21 |
 | SE-51 | `s con stampa su ECR: nessuna riga S attesa` | `ecrPrinting`; `s` → `ACKW`, risposta `s` | drain = `postResultDrainMs`; nessun `RECEIPT_END_MISSING` | §3.21 |
@@ -4324,11 +4391,11 @@ Profilo `Frames.fast` (stx, `WIRE`, tollerante, `IMPLICIT_GO_AHEAD`) salvo dove 
 
 ### 7.5 Trasporto TCP (`TcpTransportTest`, WP3, socket reali su loopback)
 
-`ServerSocket(0, 50, InetAddress.getLoopbackAddress())` nel test. Casi: TT-01 andata e ritorno; TT-02 `06` e `03 7A` in due write a 50 ms ⇒ ricomposti nello splitter, nessun byte perso; TT-03 il peer scrive e chiude ⇒ i dati sono in `rx` **prima** di `Closed(PEER_CLOSED)`; TT-04 RST (`soLinger = 0` e close) ⇒ `Closed(RESET)`; TT-05 porta chiusa ⇒ `CONNECT_FAILED`; TT-06 connect verso un indirizzo non instradabile con 300 ms ⇒ `CONNECT_TIMEOUT` (`@Tag("network")`, `Assumptions` se la rete non lo permette); TT-07 `abort()` sblocca subito il lettore e una connect in corso; TT-08 `tcpNoDelay == true`; TT-09 `send` dopo la chiusura del peer ⇒ `NOT_CONNECTED`; TT-10 riconnessione: un lettore vecchio non scrive nel buffer della nuova epoca; TT-11 `close()` idempotente ⇒ `Closed(LOCAL)`.
+`ServerSocket(0, 50, InetAddress.getLoopbackAddress())` nel test. Casi: TT-01 andata e ritorno; TT-02 `06` e `03 7A` in due write a 50 ms ⇒ ricomposti nello splitter, nessun byte perso; TT-03 il peer scrive e chiude ⇒ i dati sono in `rx` **prima** di `Closed(PEER_CLOSED)`; TT-04 RST (`soLinger = 0` e close) ⇒ `Closed(RESET)`; TT-05 porta chiusa ⇒ `CONNECT_FAILED`; TT-06 connect verso un indirizzo non instradabile con 300 ms ⇒ `CONNECT_TIMEOUT` (`@Tag("network")`, `Assumptions` se la rete non lo permette); TT-07 `abort()` sblocca subito il lettore (`Closed(ABORTED)`, il peer vede EOF); TT-07b `abort()` durante una connect verso `10.255.255.1:9` (timeout 10 s) ⇒ `TransportException(ABORTED)` entro 2 s (`@Tag("network")`, `Assumptions` se la connect fallisce da sola); TT-08 `tcpNoDelay == true`, `keepAlive == false`; TT-09 `send` dopo la chiusura del peer ⇒ `NOT_CONNECTED`; TT-10 riconnessione: un lettore vecchio non scrive nel buffer della nuova epoca; TT-11 `close()` idempotente ⇒ `Closed(LOCAL)`.
 
 ### 7.6 Simulatore e integrazione (WP4)
 
-**Ciclo di vita** (`TerminalSimulatorLifecycleTest`, skill embedded-server §8): SL-01 `start()` su porta 0 ⇒ porta > 0, `boundPort` valorizzata; SL-02 `start()`, `stop()`, `start()` sulla **stessa** porta ⇒ riesce (porta liberata); SL-03 un secondo simulatore sulla porta occupata ⇒ `BindException`; SL-04 dopo `stop()` un `ServerSocket` del test fa bind sulla stessa porta; SL-05 `stop()` con un client connesso ⇒ il client vede EOF, lo scope termina entro 2 s; SL-06 `stop()` e `close()` idempotenti.
+**Ciclo di vita** (`TerminalSimulatorLifecycleTest`, skill embedded-server §8): SL-01 `start()` su porta 0 ⇒ porta > 0, `boundPort` valorizzata; SL-02 `start()`, `stop()`, `start()` sulla **stessa** porta ⇒ riesce (porta liberata); SL-03 un secondo simulatore sulla porta occupata ⇒ `BindException`; SL-04 dopo `stop()` un `ServerSocket` del test fa bind sulla stessa porta; SL-05 `stop()` con un client connesso ⇒ il client vede EOF, lo scope termina entro 2 s; SL-06 `stop()` e `close()` idempotenti; SL-07 `stop()` con un client collegato (il client vede EOF), poi `start()` sulla stessa porta ⇒ riesce nonostante il TIME_WAIT lato simulatore, di nuovo in ascolto; SL-08 `accept()` che fallisce da solo (provocato con `soTimeout = 1` sul `ServerSocket` letto per riflessione) ⇒ `boundPort == null`, nota "Ascolto interrotto…", la porta rifiuta le connessioni; `stop()` + `start()` ripartono.
 
 **Integrazione** (`SimulatorIntegrationTest`): `TerminalSimulator` (porta 0, `ackDelayMs = 5`, `progressDelayMs = 20`, `resultDelayMs = 150`) + `Ecr17Client` + `TcpTransport` reali, opzioni Ingenico con ack 300 ms, response 2 000 ms, drain 50 ms (salvo IT-17).
 
@@ -4357,7 +4424,48 @@ Profilo `Frames.fast` (stx, `WIRE`, tollerante, `IMPLICIT_GO_AHEAD`) salvo dove 
 | IT-21 | `BARE_NAK` | simulatore: 1 `P`; `AMBIGUOUS_NAK`; `Answered` |
 | IT-22 | `LATE_RESULT_AFTER_NEXT_SEND`: `P` poi `s` | `P` ⇒ `Unknown(ResponseTimeout)`; `s` ⇒ `Answered(StatusResponse)` con `UNEXPECTED_REPLY` + `POSSIBLE_LOST_RESULT` il cui payload è l'esito trattenuto |
 | IT-23 | simulatore con `appLrcMode = std`, ECR in `stx` | il simulatore rifiuta ogni richiesta con NAK (`requestsRejectedForLrc == 4`); ECR `Refused(Nak(4))` |
-| SR-xx | `SimResponderTest` | lunghezze `E` 71/92/84, `e` 106, `i` 75, `c` 74, `s`, `T` 34, `C` 44 e rilettura con `ResponseParser`; richiesta con LRC errato ⇒ NAK, nessuna risposta applicativa, contatore; `FrameOut` con PAN mascherato |
+| IT-24 | `BARE_ACK` (`06` nudo + esito nello stesso segmento) | `ackMode = BARE`; esito APPROVED integro; warning `BARE_CONTROL` |
+| IT-25 | `DROP_AFTER_ACK` | `Unknown(Disconnected)` con `ackMode = EXPLICIT`; simulatore: **1** `P` (nessun replay, M1) |
+| IT-26 | `P`, poi `R` verso ECR | `Acknowledged`; 3 righe `S` nella trace, `isEnd` sull'ultima |
+| IT-27 | simulatore `closeAfterTransaction`; ECR `ecrPrinting` + `PERSISTENT`; due `P` (650 e 100) | entrambi APPROVED con 4 righe `S`; simulatore: 2 connessioni, 2 `E`, 2 `P` (chiude dopo il pagamento, non dopo `E1`) |
+
+**Risposte del simulatore** (`SimResponderTest`): `SimResponder` senza socket (il piano di una richiesta è una lista di passi temporizzati), ora fissa 18/03/2026 09:47; ogni esito è riletto con `ResponseParser`.
+
+| Id | Caso | Atteso |
+|---|---|---|
+| SR-01 | `P` approvato | `E` 71 B con PAN in chiaro sul filo e LRC stx; parser: APPROVED, TID `02575733`, PAN `***************1111`, auth `SIM001`, CREDIT, acquirer `00000000023`, STAN/online `000001`; STAN 1, totale 650, esito ricordato per `G` |
+| SR-02 | `X` approvato | `E` 92 B, action `000`, importo host 650 |
+| SR-03 | `S` dopo un `P` | `E` 84 B APPROVED, `authCode` null (35-40 riservate), action `000`, STAN `000002`, totale POS 0 |
+| SR-04 | `DECLINE` su `P X S H` | 71/92/84/71 B, DECLINED, `"OPERAZIONE ANNULLATA"`, STAN `000001`, totale invariato; `H` con action `100` |
+| SR-05 | `CARD_NOT_PRESENT` | 71 B con esito `05`, nessun PAN, STAN non consumato |
+| SR-06 | `p` | `e` 106 B APPROVED, importo 5 000, codice preautorizzazione `000000001` ricordato, action `000`; KO ⇒ 106 B, action `100`, CREDIT |
+| SR-07 | `i` | 75 B col layout proprio: auth `SIM001`, acquirer, STAN, data/ora, action `000`, PAN mascherato |
+| SR-08 | `c` | 74 B, action `000`, importo sommato al totale POS |
+| SR-09 | `s` | 39 B (31 + release 8): TID, data/ora correnti, stato `2`, release `"SIMP17 1"`; esito a `min(resultDelayMs, 300)`, nessun progress; release di 10 caratteri ⇒ 16 (47 B) |
+| SR-10 | `T` e `C` | `T` 34 B e `C` 44 B col totale POS accumulato (1 234); `C` APPROVED con totale host = POS, poi totale azzerato |
+| SR-11 | `G` | dopo un `P` payload identico, STAN invariato; senza esiti `E` 71 B DECLINED `"NESSUNA OPERAZIONE"` |
+| SR-12 | richiesta con LRC errato | solo NAK `15 03 69`, `requestsRejectedForLrc == 1`, nessuna elaborazione, nota "LRC"; lo stesso con simulatore std e richiesta stx |
+| SR-13 | codice `Z` o payload di 5 byte | solo NAK |
+| SR-14 | `FrameOut` dell'esito | PAN mascherato a larghezza fissa; lunghezza, LRC e descrizione originali |
+| SR-15 | `E1`, poi `P` | `E1` ⇒ solo ACK, stampa armata; `P` ⇒ ACK, progress, esito + 4 righe `S` (sentinella solo sull'ultima, PAN mascherato dal parser), poi disarmata; `E0` disarma |
+| SR-16 | `receiptAfterResult = false` | ACK, progress, 4 righe `S`, poi esito |
+| SR-17 | `R` | verso ECR: ACK + 3 righe `S` dell'ultimo scontrino con sentinella, anche senza scontrino precedente; verso il terminale: solo ACK |
+| SR-18 | tempi | ACK `06 03 7A`, progress ed esito a 5/20/150 ms; nessuna chiusura |
+| SR-19 | `ackRule = SAME_AS_APP` | ACK `06 03 78`, NAK `15 03 6B` (stx) |
+| SR-20 | `retransmitResultIfNoValidAck` | attesa dell'ACK esatto `06 03 7A` per 200 ms, al massimo 2 reinvii; senza l'opzione `validAck == null` e attesa `ECR_REPLY_WAIT_MS` |
+| SR-21 | `closeAfterTransaction` | chiude dopo `s` e `R`, non dopo `E1` né dopo un NAK per LRC |
+| SR-22 | `NO_ACK`, `PROGRESS_NO_ACK` | `NO_ACK` ⇒ solo esito; `PROGRESS_NO_ACK` ⇒ progress + esito |
+| SR-23 | `SILENT`, `NO_RESULT`, `DROP_AFTER_REQUEST`, `DROP_AFTER_ACK` | nessun passo né STAN; ACK + progress senza esito ricordato; solo chiusura; ACK poi chiusura |
+| SR-24 | `DROP_AFTER_RESULT` | esito senza attesa dell'ACK, poi chiusura |
+| SR-25 | `BARE_NAK`, `BARE_ACK` | `15` nudo + esito; `06` nudo ed esito nello stesso invio, a `ackDelayMs` |
+| SR-26 | `BAD_LRC_RESULT_ONCE` | primo esito con LRC non valido in nessuna modalità, poi lo stesso frame con LRC stx corretto |
+| SR-27 | `UNEXPECTED_FRAME_BEFORE_RESULT` | ACK, progress, `U` 34 B orfano (il parser restituisce null), esito |
+| SR-28 | `NAK_ONCE`, `NAK_ALWAYS` | NAK, ritrasmissione servita, nuova transazione di nuovo NAK; sempre NAK |
+| SR-29 | `LATE_RESULT_AFTER_NEXT_SEND` | ACK + progress senza esito; esito 71 B trattenuto e ricordato per `G`; la richiesta successiva (`s`) riceve subito l'esito trattenuto, poi ACK ed esito proprio; dopo, servizio normale |
+| SR-30 | `faultOnlyFinancial` | default: `s` con `NO_ACK` riceve l'ACK; con `false` il guasto vale anche per `s` |
+| SR-31 | `STALE_RESULT_ON_CONNECT` | alla connessione l'ultimo esito (o `noOperationPayload`) senza attesa di ACK; senza guasto nulla; richieste servite normalmente |
+| SR-32 | `PROGRESS_NO_ACK` con progress a 400 ms ed esito a 100 ms | progress ed esito entrambi a 100 ms: il progress precede sempre l'esito |
+| SR-33 | matrice `P X S H p i c` × `APPROVE/DECLINE/CARD_NOT_PRESENT` | lunghezze 71/92/84/71/106/75/74 e verdetto riletto; STAN `000001` (`000000` senza carta); nessun PAN in chiaro dopo il parser; esito ricordato per `G` |
 
 ### 7.7 Data layer e servizi (WP5)
 
@@ -4522,8 +4630,8 @@ flowchart LR
 
 1. Merge nell'ordine §8.1, `.\gradlew.bat compileKotlin test` verdi, compresi i test rimandati.
 2. Prova manuale col simulatore: avvio da *Strumenti*, *Usa come terminale*, tutti i 13 comandi, ogni `SimFault` della tabella §4.5 con l'esito atteso, banner e blocco su `SILENT` (anche dopo un riavvio dell'app), risoluzione con `G`, cronologia, porta del simulatore occupata (stato rosso e notifica), log traffico confrontato a vista con il formato della DLL. Il percorso "P sconosciuto → bloccato → G → risolto → P" è già coperto in automatico da `UnknownRecoveryIntegrationTest`.
-3. `CLAUDE.md` aggiornato (comandi, regole M1-M10, come avviare il simulatore, dove sono i file).
-4. File `NOTICE` nella radice (U14):
+3. `CLAUDE.md` aggiornato (comandi, regole M1-M10, come avviare il simulatore, dove sono i file). Fatto il 2026-10-16.
+4. File `NOTICE` nella radice (U14), creato il 2026-10-16 con questo testo:
 
 ```
 Protocollo17ComposeDesktop
@@ -4539,6 +4647,13 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
 ```
 
 5. Primo pacchetto: `.\gradlew.bat suggestModules`, aggiornamento di `modules(...)`, `packageDistributionForCurrentOS`, prova dell'MSI installato.
+   Stato al 2026-10-16: `suggestModules` ⇒ `modules("java.instrument", "jdk.unsupported")` (`java.management` non serviva); il pacchetto produce `build/compose/binaries/main/msi/Protocollo17ComposeDesktop-1.0.0.msi` ed `exe/Protocollo17ComposeDesktop-1.0.0.exe` (circa 99 MB, runtime jlink da JDK 21). La versione mostrata dall'app deriva da `version` (§2.5). Prova manuale dell'MSI, a carico dell'utente:
+   1. chiudere l'app se aperta; eseguire l'MSI: installazione per macchina (chiede l'elevazione), cartella proposta nel dialog (`C:\Program Files\Protocollo17ComposeDesktop`);
+   2. avviare da *Start > Protocollo17*: il collegamento, l'installer e *Impostazioni > App* mostrano l'icona dell'app (glifo bianco su Indigo, §2.5), non quella di default di Compose; *Aiuto > Informazioni* mostra la versione `1.0.0` e la cartella dati;
+   3. in `~/.protocollo17/logs/app.log` il banner di avvio con la versione (`Protocollo17ComposeDesktop 1.0.0 avvio: …`) e nessun `NoClassDefFoundError`/`ClassNotFoundException` (un modulo JDK mancante si vede qui);
+   4. *Strumenti > Avvia simulatore*, *Usa simulatore come terminale*, poi `s` e un `P`: esiti, log traffico e journal scritti;
+   5. chiudere e riaprire (impostazioni e journal conservati); disinstallare da *Impostazioni > App*: `~/.protocollo17` resta;
+   6. aggiornamento: alzare `version`, ricostruire e installare sopra (stesso `upgradeUuid`); la stessa versione non si reinstalla sopra se stessa.
 
 ---
 
@@ -4582,6 +4697,13 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
 - Tabella degli stati di `s`: si mostra quella Nexi 0..6 (A§4.6), con la cifra grezza sempre visibile.
 - Comandi solo-DLL, tipi pagamento `6/7/8`, seriale: fuori perimetro (U9), da catturare con l'app WPF prima di implementarli.
 - Confronto campo per campo con i default del profilo (override): rimandato a quando una cattura CCV farà divergere i profili (§5.2.1).
+
+### 9.4 Punti aperti emersi dall'allineamento col codice (da decidere)
+
+Il codice e questo documento sono allineati su ciò che il codice fa; restano due incoerenze di progetto, **non decise**:
+
+1. **`T`, `C`, `H` con la stampa su ECR.** §3.21 punto 5 dice che con `s`, `G`, `T`, `C`, `H` e la stampa su ECR attiva il drain usa `postResultDrainMs`, senza righe `S` attese né warning. La formula di §3.23 punto 7 (`expectReceipt = (ecrPrinting && command.wantsEcrPrintingSetup) || collectReceiptAfterAck`) vale invece `true` per `T`, `C` e `H`, che hanno `wantsEcrPrintingSetup = true` (§3.9): oggi quei comandi ricevono `E1`, usano la finestra `receiptDrainMs` e, senza sentinella, il warning `RECEIPT_END_MISSING`. Va deciso se `T`/`C`/`H` producono righe `S` sul terminale reale (§9.2 punto 7), e quindi se correggere il testo o la formula.
+2. **`E1` non ripetuto nel replay.** Il replay di §3.23 punto 8 (solo `s T G E`, M1) riesegue la sessione principale con lo stesso `ExchangeSpec` sulla nuova connessione, ma non ripete il `PRINTING_SETUP` del punto 6. Per `T` con la stampa su ECR la procedura ripetuta parte senza `E1` (che non è persistente, A§4.3.6) e si aspetta comunque le righe `S`. Va deciso se il replay debba ripetere `E1` o se basti documentarlo.
 
 ---
 

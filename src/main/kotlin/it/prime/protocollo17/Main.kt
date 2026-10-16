@@ -12,6 +12,7 @@ import it.prime.protocollo17.domain.repository.JournalRepository
 import it.prime.protocollo17.domain.repository.SimulatorController
 import it.prime.protocollo17.ecr17.client.Ecr17Client
 import it.prime.protocollo17.presentation.state.TerminalSessionService
+import it.prime.protocollo17.presentation.util.AppVersion
 import it.prime.protocollo17.presentation.windows.MainWindow
 import it.prime.protocollo17.presentation.windows.SecondaryWindows
 import kotlinx.coroutines.CancellationException
@@ -108,11 +109,15 @@ private fun closeAppResources() {
     log.info("Protocollo17ComposeDesktop: chiusura completata")
 }
 
-/** JVM, OS, cartella dati e file di log: la prima cosa da guardare quando si chiede un log all'operatore. */
+/**
+ * Versione dell'app, JVM, OS, cartella dati e file di log: la prima cosa da guardare quando si chiede un log
+ * all'operatore. Prima mancava la versione e non si capiva quale MSI avesse prodotto il log.
+ */
 private fun logBanner(dirs: AppDirs) {
     log.info("============================================================")
     log.info(
-        "Protocollo17ComposeDesktop avvio: JVM {} ({}), OS {} {} {}",
+        "Protocollo17ComposeDesktop {} avvio: JVM {} ({}), OS {} {} {}",
+        AppVersion.current,
         System.getProperty("java.version"), System.getProperty("java.vendor"),
         System.getProperty("os.name"), System.getProperty("os.version"), System.getProperty("os.arch"),
     )
