@@ -469,6 +469,7 @@ Rispecchia i package di main (`src/test/kotlin/it/prime/protocollo17/…`):
 
 ```
 architecture/   Ecr17IsolationTest.kt, PresentationBoundaryTest.kt                        [WP0]
+                NoCommandTimeoutTest.kt (M8)
 ecr17/testing/  Frames.kt (costanti byte comuni: SOLO costanti e LrcMode.compute)          [WP0]
 ecr17/testing/  ScriptedTransport.kt                                                       [WP3]
 ecr17/wire/     LrcModeTest, ControlLrcRuleTest, FrameCodecTest, FrameSplitterTest,
@@ -517,6 +518,7 @@ presentation/   ScreenModelTestSupport.kt, FakeCommandRunner.kt,
 
 - `Ecr17IsolationTest`: applica la prima riga della tabella, più due controlli testuali: nessun `Dispatchers.Main` in `ecr17/**`; nessun `Dispatchers.IO` in `ecr17/client/**` e `ecr17/session/**`.
 - `PresentationBoundaryTest`: applica le righe `presentation`, `presentation.state` e `domain` (per `ecr17.wire` e `ecr17.message` ammette solo gli import nominati esplicitamente nella tabella).
+- `NoCommandTimeoutTest` (M8): nessun `withTimeout(`/`withTimeoutOrNull(` (né il loro import) in `presentation/**` e `data/**` sul testo senza commenti, tranne le eccezioni dichiarate per file e funzione: `TerminalSessionService.shutdown` (l'unica attorno a un comando, già annullato, alla chiusura dell'app), `SimulatorControllerImpl.close` e `TrafficRecorder.close` (chiusura di risorse che non sono comandi). Un'eccezione senza più la chiamata fa fallire il test.
 
 ### 2.11 Cartella dati utente
 
@@ -4393,7 +4395,7 @@ Controllo manuale UI (riportato nel riepilogo di WP6): dimensione minima e scala
 
 ### 7.9 Test architetturali (WP0)
 
-`Ecr17IsolationTest` e `PresentationBoundaryTest` (§2.10), compresi il divieto di `Dispatchers.IO` in `ecr17/client` e `ecr17/session` e di import Compose in `presentation/state`. Mutation check: aggiungere a mano un `import androidx.compose.runtime.Composable` in un file di `ecr17` deve far fallire **solo** `Ecr17IsolationTest`; un `withContext(Dispatchers.IO)` in `Ecr17Client` deve far fallire `Ecr17IsolationTest`.
+`Ecr17IsolationTest`, `PresentationBoundaryTest` (§2.10) e `NoCommandTimeoutTest` (M8), compresi il divieto di `Dispatchers.IO` in `ecr17/client` e `ecr17/session` e di import Compose in `presentation/state`. Mutation check: aggiungere a mano un `import androidx.compose.runtime.Composable` in un file di `ecr17` deve far fallire **solo** `Ecr17IsolationTest`; un `withContext(Dispatchers.IO)` in `Ecr17Client` deve far fallire `Ecr17IsolationTest`; un `withTimeout(5_000) { … }` attorno a `runner.run` in `ConsoleViewModel` deve far fallire `NoCommandTimeoutTest`.
 
 ### 7.10 Terminale reale (opzionale)
 
