@@ -14,12 +14,19 @@ breakdown (WP0-WP6, tutti conclusi e uniti in `main`). Le analisi da cui deriva 
 .\gradlew.bat compileKotlin                       # compile veloce
 .\gradlew.bat test                                # unit test (JUnit5 + mockk + turbine + coroutines-test)
 .\gradlew.bat run                                 # avvia l'app
+.\gradlew.bat runDistributable                    # l'app sul runtime jlink del pacchetto (stderr in console): prima dell'MSI
 .\gradlew.bat packageDistributionForCurrentOS     # MSI ed EXE in build/compose/binaries/main/{msi,exe}
-.\gradlew.bat suggestModules                      # moduli JDK per jlink: rieseguilo se cambiano le dipendenze
+.\gradlew.bat suggestModules                      # suggerimento di moduli jlink: da confrontare con extraRuntimeModules, non da copiare
 ```
 
 La versione dell'app è solo `version` in `build.gradle.kts`: ne derivano `packageVersion` e la risorsa
 `app-version.properties` letta da *Aiuto > Informazioni* (`presentation/util/AppVersion`, `AppVersionTest`).
+
+I moduli del runtime jlink sono `extraRuntimeModules` in `build.gradle.kts`. `suggestModules` vede solo i
+riferimenti statici: non vede logback, che slf4j carica via ServiceLoader e che senza `java.naming` non parte, né i
+dati di locale. `PackagedRuntimeTest` avvia una JVM limitata all'elenco finale del plugin e fallisce se manca uno
+dei quattro moduli o se gli importi dipendono dai dati di locale; un modulo nuovo si prova con `runDistributable` (§8.10).
+I test scrivono il log solo in console (`src/test/resources/logback-test.xml`), mai in `~/.protocollo17/logs`.
 
 Test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input
 del task). Terminale reale (solo `s`, `T`, `G`, mai comandi finanziari):

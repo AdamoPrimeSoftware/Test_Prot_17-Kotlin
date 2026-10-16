@@ -110,8 +110,10 @@ private fun closeAppResources() {
 }
 
 /**
- * Versione dell'app, JVM, OS, cartella dati e file di log: la prima cosa da guardare quando si chiede un log
- * all'operatore. Prima mancava la versione e non si capiva quale MSI avesse prodotto il log.
+ * Versione dell'app, JVM, runtime, OS, cartella dati e file di log: la prima cosa da guardare quando si chiede un
+ * log all'operatore. Prima mancava la versione e non si capiva quale MSI avesse prodotto il log; poi mancava il
+ * runtime, e nello stesso app.log un avvio da `gradlew run` (JDK completo) e uno dall'MSI (runtime jlink in
+ * `<installazione>\runtime`) erano indistinguibili. Il pid separa due processi, per esempio una seconda istanza.
  */
 private fun logBanner(dirs: AppDirs) {
     log.info("============================================================")
@@ -121,6 +123,7 @@ private fun logBanner(dirs: AppDirs) {
         System.getProperty("java.version"), System.getProperty("java.vendor"),
         System.getProperty("os.name"), System.getProperty("os.version"), System.getProperty("os.arch"),
     )
+    log.info("Runtime: {} (pid {})", System.getProperty("java.home"), ProcessHandle.current().pid())
     log.info("Cartella dati: {}", dirs.root.absolutePath)
     log.info("File di log: {}", dirs.logsDir.resolve("app.log").absolutePath)
     log.info("============================================================")

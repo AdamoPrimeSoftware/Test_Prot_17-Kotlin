@@ -11,6 +11,16 @@ group = "it.prime"
 // Unica fonte della versione: ne derivano packageVersion e app-version.properties (Aiuto > Informazioni).
 version = "1.0.0"
 
+// Moduli JDK del runtime jlink di MSI ed EXE, oltre ai default del plugin Compose (java.base, java.desktop,
+// java.logging, jdk.crypto.ec). Prima c'era solo l'esito di `suggestModules` (java.instrument, jdk.unsupported), che
+// vede solo i riferimenti statici: l'app installata non partiva, perché logback, caricato da slf4j via ServiceLoader,
+// legge logback.xml solo se c'è java.naming (NoClassDefFoundError: javax/naming/NamingException prima del banner).
+// jdk.accessibility evita l'AWTError all'avvio sui PC con Java Access Bridge attivo (lettori di schermo).
+// java.instrument e jdk.unsupported vengono da suggestModules. PackagedRuntimeTest avvia una JVM limitata all'elenco
+// finale del plugin e verifica logback (java.naming), il provider AccessBridge (jdk.accessibility), la presenza degli
+// altri due e formatCents: togliere uno di questi moduli lo fa fallire. Un modulo nuovo si prova con runDistributable.
+val extraRuntimeModules = listOf("java.instrument", "jdk.unsupported", "java.naming", "jdk.accessibility")
+
 kotlin {
     jvmToolchain(21)
 }
@@ -72,8 +82,8 @@ compose.desktop {
             languageVersion.set(JavaLanguageVersion.of(21))
         }.get().metadata.installationPath.asFile.absolutePath
         nativeDistributions {
-            // Da `.\gradlew.bat suggestModules` (2026-10-16); rieseguirlo quando cambiano le dipendenze.
-            modules("java.instrument", "jdk.unsupported")
+            // Vedi extraRuntimeModules: `suggestModules` è un punto di partenza, non l'elenco completo.
+            modules(*extraRuntimeModules.toTypedArray())
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Protocollo17ComposeDesktop"
             packageVersion = project.version.toString()   // MSI rifiuta MAJOR = 0
@@ -88,4 +98,10 @@ compose.desktop {
             }
         }
     }
+}
+
+// Dopo compose.desktop: PackagedRuntimeTest riceve l'elenco FINALE che il plugin passa a jlink (i suoi default più
+// extraRuntimeModules), non una copia a mano dei default che un aggiornamento del plugin farebbe divergere.
+tasks.test {
+    systemProperty("p17.runtimeModules", compose.desktop.application.nativeDistributions.modules.joinToString(","))
 }

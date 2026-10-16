@@ -1,0 +1,14 @@
+<configuration>
+    <!-- Solo per i test (DESIGN §2.7, §7.1): logback lo preferisce a logback.xml, che nel JVM dei test c'è comunque.
+         Prima ogni gradlew test scriveva le sue righe (journal illeggibile, corrupt-*, porta occupata: WARN ed ERROR
+         voluti) nel vero ~/.protocollo17/logs/app.log, mescolate a quelle dell'app, e ne faceva ruotare il file.
+         Niente appender FILE: la console finisce nel report Gradle del singolo test. -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder><pattern>%date{HH:mm:ss.SSS} [%thread] %-5level %logger{32} - %msg%n</pattern></encoder>
+    </appender>
+
+    <logger name="it.prime.protocollo17" level="DEBUG" />
+    <root level="INFO">
+        <appender-ref ref="CONSOLE" />
+    </root>
+</configuration>

@@ -84,7 +84,7 @@ L'app deve:
 - `U` (tokenizzazione, dati aggiuntivi verso/dal GT) e `K` (VAS). Se il terminale invia comunque un `U` o un `K`, il frame viene trattato come **risposta inattesa** (ACK + warning, mai esito).
 - Refund, RefundExt, VoidR, LetturaCarta, StatoPos, tipi pagamento `6/7/8`, trasporto RS-232.
 - Sonda LRC automatica e test "variante ACK" (L§10.6 fase 2): in v1 si fanno a mano cambiando le opzioni e lanciando `s`. Predisposti per v1.1 (§9).
-- Installer firmato; `.ico` dell'installer (la finestra usa un'icona vettoriale Material).
+- Installer firmato; icona del file `.msi` e bitmap del wizard dell'MSI (non configurabili dal DSL di Compose; l'icona dell'app, `icon.ico`, c'è: §2.5).
 - Estrazione del modulo `ecr17` (dopo il collaudo, U12).
 
 ### 1.5 Invarianti di money-safety (da rispettare in ogni WP)
@@ -123,8 +123,9 @@ Protocollo17ComposeDesktop/
 └── src/
     ├── main/kotlin/it/prime/protocollo17/      (§2.8)
     ├── main/resources/logback.xml, app-version.properties (§2.5)
-    ├── main/packaging/icon.ico                 (icona dell'installer, §2.5)
-    └── test/kotlin/it/prime/protocollo17/      (§2.9)
+    ├── main/packaging/icon.ico                 (icona di exe, installer .exe, Start e Impostazioni > App, §2.5)
+    ├── test/kotlin/it/prime/protocollo17/      (§2.9)
+    └── test/resources/logback-test.xml         (log dei test solo in console, §2.7)
 ```
 
 ### 2.2 `settings.gradle.kts`
@@ -231,6 +232,16 @@ group = "it.prime"
 // Unica fonte della versione: ne derivano packageVersion e app-version.properties (Aiuto > Informazioni).
 version = "1.0.0"
 
+// Moduli JDK del runtime jlink di MSI ed EXE, oltre ai default del plugin Compose (java.base, java.desktop,
+// java.logging, jdk.crypto.ec). Prima c'era solo l'esito di `suggestModules` (java.instrument, jdk.unsupported), che
+// vede solo i riferimenti statici: l'app installata non partiva, perché logback, caricato da slf4j via ServiceLoader,
+// legge logback.xml solo se c'è java.naming (NoClassDefFoundError: javax/naming/NamingException prima del banner).
+// jdk.accessibility evita l'AWTError all'avvio sui PC con Java Access Bridge attivo (lettori di schermo).
+// java.instrument e jdk.unsupported vengono da suggestModules. PackagedRuntimeTest avvia una JVM limitata all'elenco
+// finale del plugin e verifica logback (java.naming), il provider AccessBridge (jdk.accessibility), la presenza degli
+// altri due e formatCents: togliere uno di questi moduli lo fa fallire. Un modulo nuovo si prova con runDistributable.
+val extraRuntimeModules = listOf("java.instrument", "jdk.unsupported", "java.naming", "jdk.accessibility")
+
 kotlin {
     jvmToolchain(21)
 }
@@ -292,8 +303,8 @@ compose.desktop {
             languageVersion.set(JavaLanguageVersion.of(21))
         }.get().metadata.installationPath.asFile.absolutePath
         nativeDistributions {
-            // Da `.\gradlew.bat suggestModules` (2026-10-16); rieseguirlo quando cambiano le dipendenze.
-            modules("java.instrument", "jdk.unsupported")
+            // Vedi extraRuntimeModules: `suggestModules` è un punto di partenza, non l'elenco completo.
+            modules(*extraRuntimeModules.toTypedArray())
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Protocollo17ComposeDesktop"
             packageVersion = project.version.toString()   // MSI rifiuta MAJOR = 0
@@ -309,11 +320,17 @@ compose.desktop {
         }
     }
 }
+
+// Dopo compose.desktop: PackagedRuntimeTest riceve l'elenco FINALE che il plugin passa a jlink (i suoi default più
+// extraRuntimeModules), non una copia a mano dei default che un aggiornamento del plugin farebbe divergere.
+tasks.test {
+    systemProperty("p17.runtimeModules", compose.desktop.application.nativeDistributions.modules.joinToString(","))
+}
 ```
 
-`src/main/packaging/icon.ico` (committato) è l'icona di MSI, EXE, collegamenti e *Impostazioni > App*: lo stesso disegno di `rememberAppIcon()` (§6.1) renderizzato con `ImageComposeScene` a 16, 32 e 48 px (BMP 32 bit con alfa) e a 256 px (PNG). È stato generato una volta sola da un test temporaneo non committato; se cambia `AppIcon.kt` va rigenerato allo stesso modo.
+`src/main/packaging/icon.ico` (committato) è l'icona dell'eseguibile installato, dell'installer `.exe`, del collegamento in *Start* e della voce di *Impostazioni > App*; il file `.msi` ha sempre l'icona standard di Windows Installer (non è un eseguibile) e il wizard, in inglese, usa i bitmap di default di WiX, che il DSL di Compose non permette di cambiare. È lo stesso disegno di `rememberAppIcon()` (§6.1) renderizzato con `ImageComposeScene` a 16, 32 e 48 px (BMP 32 bit con alfa) e a 256 px (PNG). È stato generato una volta sola da un test temporaneo non committato; se cambia `AppIcon.kt` va rigenerato allo stesso modo.
 
-Comandi (riportati in `CLAUDE.md`): `.\gradlew.bat compileKotlin`, `.\gradlew.bat test`, `.\gradlew.bat run`, `.\gradlew.bat packageDistributionForCurrentOS` (MSI ed EXE in `build/compose/binaries/main/{msi,exe}`), `.\gradlew.bat suggestModules`. Per i test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input del task).
+Comandi (riportati in `CLAUDE.md`): `.\gradlew.bat compileKotlin`, `.\gradlew.bat test`, `.\gradlew.bat run`, `.\gradlew.bat runDistributable` (l'app sul runtime jlink del pacchetto, §8.10), `.\gradlew.bat packageDistributionForCurrentOS` (MSI ed EXE in `build/compose/binaries/main/{msi,exe}`), `.\gradlew.bat suggestModules`. Per i test di rete o contro terminale reale: `--no-build-cache cleanTest test` (le variabili d'ambiente non sono input del task).
 
 ### 2.6 Gradle wrapper
 
@@ -351,6 +368,8 @@ Copiare da `D:/LLM/DesktopApp/LocalDesktopAi`: `gradlew`, `gradlew.bat`, `gradle
     </root>
 </configuration>
 ```
+
+**Log dei test** (`src/test/resources/logback-test.xml`): solo l'appender `CONSOLE`, stessi livelli e stesso pattern; nessun `FILE`. Logback cerca `logback-test.xml` prima di `logback.xml`, che nel JVM dei test c'è comunque (`build/resources/main`). Prima ogni `gradlew test` scriveva circa 100 KB di righe dei test (WARN ed ERROR voluti: journal illeggibile, `journal.jsonl.corrupt-…`, porta occupata) nel vero `~/.protocollo17/logs/app.log`, indistinguibili da quelle dell'app, e ne faceva ruotare il file del giorno prima. La console finisce nel report Gradle del singolo test. Journal, settings e `app.lock` veri non sono mai stati toccati dai test (`AppModuleTest` sostituisce `AppDirs` con una cartella temporanea); `PackagedRuntimeTest` usa `logback.xml` di proposito, con `user.home` temporanea (§8.10).
 
 Nota: il percorso è sempre `~/.protocollo17/logs` (`C:\Users\<utente>\.protocollo17\logs`). `AppDirs.default()` (§5.1) usa **la stessa** radice, senza varianti per variabile d'ambiente: un solo posto da cercare quando si chiede un log. La scelta segue LocalDesktopAi (`~/.localdesktopai`) e la skill data-layer (`~/.myapp/`); `%APPDATA%` proposto in A§12.6 non porta vantaggi per un'app di test non roaming. Il log traffico hex **non** passa da logback (file dedicato, §5.4).
 
@@ -517,7 +536,12 @@ presentation/   ScreenModelTestSupport.kt, FakeCommandRunner.kt, UiFixtures.kt,
                 journal/JournalViewModelTest, simulator/SimulatorViewModelTest,
                 state/AppWindowsTest, util/GeometryRulesTest, util/FailureMessagesTest     [WP6]
 presentation/util/ AppVersionTest (versione della risorsa = version di Gradle)            [§8.10]
+di/             AppModuleTest (risolve tutto appModule su una AppDirs temporanea)          [§8.10]
+domain/util/    MoneyTest (formatCents: "0,01 €", "1.234,56 €")                            [§8.10]
+packaging/      PackagedRuntimeTest (JVM figlia con i soli moduli del runtime jlink)       [§8.10]
 ```
+
+Le risorse dei test sono solo `src/test/resources/logback-test.xml` (log in console, §2.7).
 
 `Frames.kt` è di WP0 perché lo usano i test di WP1 (`PanMaskerTest`), WP2 (`ResponseParserTest`), WP3 e WP4: contiene solo costanti e `app()` costruito con `LrcMode.compute` (WP0), mai `Hex.parse` (stub WP1).
 
@@ -3090,9 +3114,11 @@ class ShutdownWatchdog(private val graceMs: Long = 10_000, private val halt: () 
 ```kotlin
 package it.prime.protocollo17.domain.util                      // Money.kt [WP0]
 
-/** L'UNICO formattatore di importi: "0,10 €", "1.234,56 €" (Locale.ITALY, sempre 2 decimali). */
+/** L'UNICO formattatore di importi: "0,10 €", "1.234,56 €" (simboli ',' e '.' fissi, sempre 2 decimali). */
 fun formatCents(cents: Long): String
 ```
+
+I simboli sono quelli di `Locale.ROOT` con `decimalSeparator = ','` e `groupingSeparator = '.'` impostati a mano, non `DecimalFormatSymbols.getInstance(Locale.ITALY)`: il runtime jlink dell'MSI non ha `jdk.localedata` e `Locale.ITALY` ricadeva in silenzio sui simboli di root ("0.01 €", "1,234.56 €"), anche nel testo scritto nel journal, mentre con `gradlew run` (JDK completo) era tutto giusto. Aggiungere `jdk.localedata` costerebbe circa 28 MB e una futura revisione dell'elenco fatta sull'esito di `suggestModules` (che non lo propone mai) lo toglierebbe di nuovo. `MoneyTest` verifica i valori; `PackagedRuntimeTest` li verifica sul solo insieme di moduli del pacchetto (§8.10).
 
 ```kotlin
 package it.prime.protocollo17.domain.model.command             // CommandTitles.kt [WP0]
@@ -4066,7 +4092,7 @@ private val log = LoggerFactory.getLogger("Protocollo17.Main")
 fun main() {
     Thread.setDefaultUncaughtExceptionHandler { t, e -> log.error("Eccezione non gestita sul thread '{}'", t.name, e) }
     val dirs = AppDirs.default().ensure()
-    logBanner(dirs)                                   // versione (AppVersion.current), JVM, OS, cartelle
+    logBanner(dirs)                                   // versione (AppVersion.current), JVM, OS, runtime e pid, cartelle
     if (SingleInstanceGuard.acquire(dirs.lockFile) is SingleInstanceGuard.Attempt.HeldByOther) {
         showAlreadyRunningDialog()                    // JOptionPane in runCatching
         exitProcess(0)
@@ -4203,6 +4229,7 @@ Messaggi (italiano, azionabili, mai codici nudi). Il suffisso **[G]** = " ESITO 
 - Vettori: payload come `String` ASCII nei test (blocchi di codice di A§9 e L§13), byte come `Hex.parse("02 30 …")` nei test di WP1+ (mai dentro `Frames`); confronto di array con `assertArrayEquals`.
 - **Tempo virtuale** per sessione e client: `runTest { … }` con `ScriptedTransport(backgroundScope)` e `timeSource = testScheduler.timeSource` (opt-in `ExperimentalCoroutinesApi` dove serve). I ritardi scriptati sono `delay()` nel `backgroundScope`, quindi 120 s di timeout durano microsecondi. Mai `Thread.sleep`. Funziona **solo** perché client e sessione non cambiano dispatcher (§2.10, imposto da `Ecr17IsolationTest`).
 - **Tempo reale** solo per `TcpTransportTest`, i test del simulatore e di integrazione: timeout brevi (ack 300 ms, response 2 000 ms, drain 50 ms salvo dove indicato) e attese con `withTimeout` di sicurezza attorno all'intero test; mai `delay` per "aspettare che succeda": si osserva uno stato (`linkState.first { … }`, `awaitTrue`).
+- Log dei test solo in console (`src/test/resources/logback-test.xml`, §2.7): nessun test scrive in `~/.protocollo17`.
 - File system con `@TempDir`. ViewModel: `Dispatchers.setMain(UnconfinedTestDispatcher())` in `@BeforeEach`, `resetMain()` in `@AfterEach`, `popStandaloneScreenModels()` (`presentation/ScreenModelTestSupport.kt`, come LocalDesktopAi).
 - Config rapida di sessione (`Frames.fast`): `ProtocolOptions(appLrcMode = STX, ackTimeoutMs = 40, responseTimeoutMs = 200, nakRetryCount = 3, ackTimeoutRetransmitCount = 3, retryDelayMs = 1, postResultDrainMs = 20, receiptDrainMs = 60, preSendQuietMs = 0)`. Passa i controlli **strutturali** di `validate()` (§3.16): i range dell'operatore non si applicano al protocollo. Variante `Frames.fastStd` = `std` + `SAME_AS_APP` per i vettori dei repo (A§9.6).
 
@@ -4646,14 +4673,18 @@ Grazie a padosoft per il lavoro pubblicato e per la documentazione sulle insidie
 Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ingenico Italia S.p.A.).
 ```
 
-5. Primo pacchetto: `.\gradlew.bat suggestModules`, aggiornamento di `modules(...)`, `packageDistributionForCurrentOS`, prova dell'MSI installato.
-   Stato al 2026-10-16: `suggestModules` ⇒ `modules("java.instrument", "jdk.unsupported")` (`java.management` non serviva); il pacchetto produce `build/compose/binaries/main/msi/Protocollo17ComposeDesktop-1.0.0.msi` ed `exe/Protocollo17ComposeDesktop-1.0.0.exe` (circa 99 MB, runtime jlink da JDK 21). La versione mostrata dall'app deriva da `version` (§2.5). Prova manuale dell'MSI, a carico dell'utente:
-   1. chiudere l'app se aperta; eseguire l'MSI: installazione per macchina (chiede l'elevazione), cartella proposta nel dialog (`C:\Program Files\Protocollo17ComposeDesktop`);
-   2. avviare da *Start > Protocollo17*: il collegamento, l'installer e *Impostazioni > App* mostrano l'icona dell'app (glifo bianco su Indigo, §2.5), non quella di default di Compose; *Aiuto > Informazioni* mostra la versione `1.0.0` e la cartella dati;
-   3. in `~/.protocollo17/logs/app.log` il banner di avvio con la versione (`Protocollo17ComposeDesktop 1.0.0 avvio: …`) e nessun `NoClassDefFoundError`/`ClassNotFoundException` (un modulo JDK mancante si vede qui);
-   4. *Strumenti > Avvia simulatore*, *Usa simulatore come terminale*, poi `s` e un `P`: esiti, log traffico e journal scritti;
-   5. chiudere e riaprire (impostazioni e journal conservati); disinstallare da *Impostazioni > App*: `~/.protocollo17` resta;
-   6. aggiornamento: alzare `version`, ricostruire e installare sopra (stesso `upgradeUuid`); la stessa versione non si reinstalla sopra se stessa.
+5. Primo pacchetto: moduli del runtime, `.\gradlew.bat runDistributable`, `packageDistributionForCurrentOS`, prova dell'MSI installato.
+   Stato al 2026-10-16 (ufficio): `suggestModules` ⇒ `modules("java.instrument", "jdk.unsupported")` (`java.management` non serviva); il pacchetto produceva `build/compose/binaries/main/msi/Protocollo17ComposeDesktop-1.0.0.msi` ed `exe/Protocollo17ComposeDesktop-1.0.0.exe` (circa 99 MB, runtime jlink da JDK 21).
+   Revisione del 2026-10-16 (casa), prima della prova: quel pacchetto **non partiva**. Il runtime jlink contiene solo i default del plugin Compose 1.8.2 (`java.base`, `java.desktop`, `java.logging`, `jdk.crypto.ec`, verificati nel bytecode del plugin) più `modules(...)`, senza `--bind-services`. Logback 1.5.12, caricato da slf4j via ServiceLoader, nel leggere `logback.xml` collega `InsertFromJNDIModelHandler` e senza `java.naming` lancia `NoClassDefFoundError: javax/naming/NamingException` in `MainKt.<clinit>` (il logger di `Main.kt`), prima del banner; riprodotto con l'app vera su un runtime con gli stessi moduli. In più, senza `jdk.localedata` gli importi uscivano come "0.01 €" (§5.8). `suggestModules` (jdeps) non vede né l'uno né l'altro: vede solo i riferimenti statici dell'app, e logback dichiara `requires static java.naming`. Ora i moduli sono `extraRuntimeModules` in `build.gradle.kts` (§2.5): `java.instrument`, `jdk.unsupported`, `java.naming` (circa +0,9 MB con `java.security.sasl`) e `jdk.accessibility` (circa +0,85 MB, le due DLL dell'Access Bridge: senza, con Java Access Bridge attivo AWT lancia `AWTError` all'avvio); gli importi non dipendono più dai dati di locale (§5.8). `PackagedRuntimeTest` avvia una JVM figlia con `--limit-modules` uguale all'elenco **finale** che il plugin passa a jlink (`compose.desktop.application.nativeDistributions.modules`, passato da Gradle in `p17.runtimeModules`, quindi niente copia a mano dei default del plugin): logback deve configurarsi da `logback.xml` con il FILE appender, deve esserci il provider `com.sun.java.accessibility.AccessBridge`, devono esserci `sun.misc.Unsafe` e `java.lang.instrument.Instrumentation`, e `formatCents` deve dare "1.234,56 €". Il test è mutation-checked: senza `java.naming` fallisce con la stessa `NoClassDefFoundError`, senza `jdk.accessibility` con `ACCESS_BRIDGE=false`, con `Locale.ITALY` con "1,234.56 €". `suggestModules` resta un suggerimento da confrontare con `extraRuntimeModules`, non da copiare; un modulo aggiunto per una nuova dipendenza va provato con `runDistributable`. Pacchetto ricostruito con questi moduli (2026-10-16): MSI 95,8 MB, EXE 96,3 MB; `runtime\release` con i 12 moduli attesi del passo 3.
+   La versione mostrata dall'app deriva da `version` (§2.5). Al primo pacchetto su un PC serve la rete: il plugin scarica WiX 3.11 e un piccolo jar per controllare la versione del JDK. Prova manuale dell'MSI, a carico dell'utente:
+   0. `.\gradlew.bat runDistributable`: l'app parte sullo **stesso** runtime jlink del pacchetto e l'eventuale stack trace esce nella console di Gradle (nell'app installata no: il launcher è GUI). Aprire, *Aiuto > Informazioni*, chiudere. Prima del 2026-10-16 `gradlew test` scriveva nello stesso `app.log` (§2.7): un `app.log` di quei giorni va messo da parte prima della prova, per non confondere le righe dei test con quelle dell'app;
+   1. chiudere l'app se aperta; eseguire l'MSI: wizard in inglese (bitmap di default di WiX), installazione per macchina (l'elevazione si chiede su *Install*; editore "Sconosciuto", il pacchetto non è firmato), cartella proposta nel dialog (`C:\Program Files\Protocollo17ComposeDesktop\`), nessuna pagina di licenza;
+   2. avviare da *Start > Tutte le app > Protocollo17 > Protocollo17ComposeDesktop* (`menuGroup` attiva da solo `--win-menu`; nessun collegamento sul desktop, `shortcut` è false): il collegamento, la barra delle applicazioni, l'installer `.exe` e la voce di *Impostazioni > App* mostrano l'icona dell'app (glifo bianco su Indigo, §2.5); il file `.msi` ha sempre l'icona standard di Windows Installer. *Aiuto > Informazioni* mostra la versione `1.0.0` e la cartella dati;
+   3. in `~/.protocollo17/logs/app.log` (leggerlo con `Get-Content … -Encoding UTF8`: è UTF-8) un banner **nuovo**, con l'ora dell'avvio: `Protocollo17ComposeDesktop 1.0.0 avvio: …` seguito da `Runtime: C:\Program Files\Protocollo17ComposeDesktop\runtime (pid …)` (con `gradlew run` o `runDistributable` il runtime è un altro). Un modulo mancante che rompe logback **non** si vede in `app.log`: niente banner nuovo e un riquadro "Failed to launch JVM"; lo stack trace si legge con `Start-Process "C:\Program Files\Protocollo17ComposeDesktop\Protocollo17ComposeDesktop.exe" -RedirectStandardError "$env:TEMP\p17-stderr.txt"`. Anche un modulo che fornisce solo servizi o dati (`jdk.localedata`, `jdk.charsets`, `jdk.zipfs`) non lascia errori: si vede solo dal comportamento. Moduli del runtime: riga `MODULES` di `C:\Program Files\Protocollo17ComposeDesktop\runtime\release` (attesi `java.base`, `java.datatransfer`, `java.desktop`, `java.instrument`, `java.logging`, `java.naming`, `java.prefs`, `java.security.sasl`, `java.xml`, `jdk.accessibility`, `jdk.crypto.ec`, `jdk.unsupported`; nel runtime non c'è `java.exe`). Nessun `NoClassDefFoundError`/`ClassNotFoundException`. I frame JDK degli stack trace sono senza numero di riga (`--strip-debug`);
+   4. *Strumenti > Avvia simulatore*, *Usa simulatore come terminale*, poi `s` e un `P`: esiti, log traffico e journal scritti; la notifica e il journal mostrano "0,01 €" (non "0.01 €"). Oltre al banner (e, al primo avvio su un PC, `settings.json non esiste`), l'avvio del simulatore e i comandi riusciti non scrivono nulla in `app.log`: la prova è nel log traffico, nel journal e in `settings.json`;
+   5. chiudere (`app.log`: `chiusura completata`) e riaprire (impostazioni e journal conservati: al secondo avvio manca la riga `settings.json non esiste`); disinstallare da *Impostazioni > App*: spariscono la cartella in *Programmi* e la voce di *Start*, `~/.protocollo17` resta;
+   6. aggiornamento: alzare `version` (es. 1.0.1), ricostruire e installare il nuovo `.msi` sopra (stesso `upgradeUuid`): dopo la pagina della cartella il wizard chiede se installare nella cartella esistente ("The folder … already exist…") ⇒ *Yes*; in *Impostazioni > App* resta una sola voce, con la nuova versione. Il downgrade è permesso. Stessa versione: rilanciare lo stesso `.msi` apre la manutenzione (*Repair*/*Remove*); un `.msi` ricostruito con la stessa versione, o l'`.exe` della stessa versione dopo l'`.msi`, si ferma con l'errore 1638 di Windows Installer (stesso ProductCode, PackageCode diverso): per provare l'`.exe`, disinstallare prima o alzare la versione;
+   7. a fine prova *Strumenti > Ripristina terminale*: altrimenti i comandi successivi vanno ancora al simulatore (`127.0.0.1:15577`).
 
 ---
 
