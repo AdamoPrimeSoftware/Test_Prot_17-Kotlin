@@ -68,7 +68,8 @@ object PanMasker {
      * Copia del payload applicativo mascherato secondo il codice in pos 10:
      * - 'i': PAN (pos 13 len 19) SEMPRE mascherato (la risposta 75 B non ha ramo KO, A§4.5.4);
      * - E, V, e, c, v: PAN (pos 13 len 19) mascherato se l'esito (pos 11-12) è diverso da "01";
-     * - 'S' (riga di scontrino) e codici fuori dalle risposte v1 (U, K, altro): maskDigitRuns dalla pos 11;
+     * - 'S' (riga di scontrino) e codici fuori dalle risposte v1 (U, K, altro): maskDigitRuns dalla pos 11, con lo
+     *   0x7F (doppia altezza) trasparente;
      * - s, T, C: copia identica (nessun PAN; contengono lunghe sequenze di cifre che NON vanno toccate).
      *
      * Un payload troncato maschera la parte del campo PAN che c'è; un esito mancante (payload < 12 byte) conta
@@ -79,6 +80,11 @@ object PanMasker {
      * sono solo 9 cifre (sotto la soglia di 13): il TID non viene mai toccato. Cambia solo quando la pos 10 è
      * una cifra (intestazione spostata, frammento di esito dopo uno STX spurio): prima una sequenza iniziata
      * prima della pos 11 veniva contata solo dalla pos 11 e un PAN poteva restare in chiaro (M9).
+     *
+     * Nel ramo delle sequenze lo 0x7F (doppia altezza delle righe 'S') è trasparente, come in
+     * `ResponseParser.maskRawReceipt`: il terminale può inserirlo in mezzo al PAN. Prima `41111111<7F>11111111`
+     * contava come due sequenze da 8 cifre, sotto la soglia, e il PAN restava in chiaro nel log traffico (via
+     * [maskFrame]) e nel log del simulatore, mentre il testo della riga S lo mascherava (M9).
      */
     fun maskApplicationPayload(payload: ByteArray): ByteArray {
         val out = payload.copyOf()
@@ -87,7 +93,8 @@ object PanMasker {
             code == 'i' -> maskPanField(out)
             code in PAN_IF_NOT_KO -> if (!isKo(out)) maskPanField(out)
             code in NO_PAN -> Unit
-            else -> maskDigitRunsInPlace(out, from = 0)   // 'S', U, K, codici sconosciuti o numerici, payload corti
+            // 'S', U, K, codici sconosciuti o numerici, payload corti
+            else -> maskDigitRunsIgnoring(out, transparent = ControlChars.RECEIPT_DOUBLE)
         }
         return out
     }
@@ -162,6 +169,20 @@ object PanMasker {
     private fun maskDigitRunsInPlace(bytes: ByteArray, from: Int) {
         forEachDigitRun(size = bytes.size, from = from, isDigit = { isAsciiDigit(bytes[it]) }) { runStart, runEnd ->
             for (i in runStart until runEnd - VISIBLE_DIGITS) bytes[i] = MASK_BYTE
+        }
+    }
+
+    /**
+     * Come [maskDigitRunsInPlace] su tutto l'array ma con il byte [transparent] ignorato: le sequenze si contano sulla
+     * proiezione senza quel byte (indici in [kept]) e le cifre mascherate tornano al loro posto. Lunghezza e
+     * posizione dei byte trasparenti restano quelle del filo.
+     */
+    private fun maskDigitRunsIgnoring(bytes: ByteArray, transparent: Int) {
+        val kept = IntArray(bytes.size)
+        var size = 0
+        for (i in bytes.indices) if ((bytes[i].toInt() and 0xFF) != transparent) kept[size++] = i
+        forEachDigitRun(size = size, from = 0, isDigit = { isAsciiDigit(bytes[kept[it]]) }) { runStart, runEnd ->
+            for (i in runStart until runEnd - VISIBLE_DIGITS) bytes[kept[i]] = MASK_BYTE
         }
     }
 

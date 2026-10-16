@@ -1,5 +1,6 @@
 package it.prime.protocollo17.ecr17.wire
 
+import it.prime.protocollo17.ecr17.message.ResponseParser
 import it.prime.protocollo17.ecr17.testing.Frames
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -135,6 +136,36 @@ class PanMaskerTest {
         assertEquals(Frames.RECEIPT, maskPayload(Frames.RECEIPT), "riga senza PAN invariata")
     }
 
+    /**
+     * Lo 0x7F (doppia altezza) in mezzo al PAN di una riga S è trasparente. Prima `41111111<7F>11111111` contava come
+     * due sequenze da 8 cifre, sotto la soglia di 13, e il PAN restava in chiaro nel log traffico e nel log del
+     * simulatore mentre il testo della riga lo mascherava (M9). Lo 0x7F resta al suo posto e il grezzo coincide con
+     * quello del parser (`ResponseParser.maskRawReceipt`).
+     */
+    @Test
+    fun `riga S con PAN spezzato da 0x7F`() {
+        val split = "123456780SPAN 41111111\u007F11111111"
+        val masked = maskPayload(split)
+        assertEquals("123456780SPAN ********\u007F****1111", masked)
+        assertEquals(split.length, masked.length)
+        assertFalse(longDigitRun.containsMatchIn(masked.filter { it != '\u007F' }), "13+ cifre in chiaro in $masked")
+        assertEquals(ResponseParser.parseReceiptLine(ascii(split), maskPan = true).raw, masked.substring(10), "stessa maschera del parser")
+
+        // 0x7F in testa alla riga (caso tipico della doppia altezza) e più 0x7F nella stessa sequenza.
+        assertEquals("123456780S\u007FCARTA ************1111", maskPayload("123456780S\u007FCARTA 4111111111111111"))
+        assertEquals("123456780S**\u007F******\u007F****\u007F1111", maskPayload("123456780S41\u007F111111\u007F1111\u007F1111"))
+
+        // Sotto la soglia anche contando attraverso lo 0x7F: invariato.
+        assertEquals("123456780S12345\u007F6789", maskPayload("123456780S12345\u007F6789"))
+    }
+
+    /** Lo stesso vale per i codici sconosciuti, che passano dallo stesso ramo. */
+    @Test
+    fun `codice sconosciuto con PAN spezzato da 0x7F`() {
+        assertEquals("123456780U********\u007F****1111", maskPayload("123456780U41111111\u007F11111111"))
+        assertEquals("123456780?********\u007F****1111", maskPayload("123456780?41111111\u007F11111111"))
+    }
+
     /** s, T, C non hanno PAN: le loro lunghe sequenze di cifre (data/ora, totali) restano intatte. */
     @Test
     fun `s T C invariati`() {
@@ -215,6 +246,22 @@ class PanMaskerTest {
         )
         assertFalse("4111111111111111" in text(masked))
         assertTrue(text(frame).contains("4111111111111111"), "il frame originale non viene modificato")
+    }
+
+    /**
+     * Riga S con il PAN spezzato da 0x7F come arriva sul filo (ProtocolEvent.Wire RX e SimEvent.FrameOut): payload
+     * mascherato con lo 0x7F al suo posto, ETX e LRC originali. Prima il frame finiva in chiaro nel log traffico (M9).
+     */
+    @Test
+    fun `maskFrame su riga S con PAN spezzato da 0x7F`() {
+        val payload = "123456780SPAN 41111111\u007F11111111"
+        val frame = Frames.app(payload)
+        val masked = PanMasker.maskFrame(frame)
+        assertEquals(frame.size, masked.size)
+        assertEquals("\u0002123456780SPAN ********\u007F****1111\u0003", text(masked.copyOfRange(0, masked.size - 1)))
+        assertEquals(frame.last(), masked.last(), "LRC originale")
+        assertFalse("41111111" in text(masked), "nessuna metà del PAN in chiaro")
+        assertTrue(text(frame).contains("41111111\u007F11111111"), "il frame originale non viene modificato")
     }
 
     /** Frame di controllo e progress senza cifre passano invariati; frame KO invariato. */

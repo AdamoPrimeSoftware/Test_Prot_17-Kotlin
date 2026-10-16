@@ -821,11 +821,14 @@ object PanMasker {
      * Copia del payload applicativo mascherato secondo il codice in pos 10:
      * - 'i': PAN (pos 13 len 19) SEMPRE mascherato (la risposta 75 B non ha ramo KO, A§4.5.4);
      * - E, V, e, c, v: PAN (pos 13 len 19) mascherato se l'esito (pos 11-12) è diverso da "01";
-     * - 'S' (riga di scontrino) e codici fuori dalle risposte v1 (U, K, altro): maskDigitRuns dalla pos 11;
+     * - 'S' (riga di scontrino) e codici fuori dalle risposte v1 (U, K, altro): maskDigitRuns dalla pos 11, con lo
+     *   0x7F (doppia altezza) trasparente;
      * - s, T, C: copia identica (nessun PAN; contengono lunghe sequenze di cifre che NON vanno toccate).
      * Le sequenze del ramo maskDigitRuns si contano su tutto il payload: con il codice in pos 10 non numerico è
      * come partire dalla pos 11 (TID + '0' = 9 cifre, sotto la soglia), e con una pos 10 numerica (intestazione
-     * spostata) un PAN iniziato prima della pos 11 non resta in chiaro.
+     * spostata) un PAN iniziato prima della pos 11 non resta in chiaro. Lo 0x7F si salta come in
+     * ResponseParser.maskRawReceipt (proiezione senza 0x7F, mascheramento, 0x7F rimessi al loro posto): il terminale
+     * può inserirlo in mezzo al PAN, e `41111111<7F>11111111` non deve contare come due sequenze sotto la soglia.
      */
     fun maskApplicationPayload(payload: ByteArray): ByteArray
     /** Come sopra ma su un frame STX…ETX LRC completo; l'LRC resta quello originale. */
@@ -840,7 +843,7 @@ object PanMasker {
 }
 ```
 
-Dove si applica (M9): `ProtocolEvent.Wire` RX ⇒ `maskFrame`; `ProtocolEvent.Discarded` ⇒ `maskDigitRuns`; `ResponseParser.parseReceiptLine(maskPan = true)` ⇒ `maskDigitRuns` su `raw` e `text`; `SimEvent.FrameOut` ⇒ `maskFrame`; `SimEvent.FrameIn` (richieste dell'ECR, senza PAN) e i byte di controllo ⇒ invariati.
+Dove si applica (M9): `ProtocolEvent.Wire` RX ⇒ `maskFrame`; `ProtocolEvent.Discarded` ⇒ `maskDigitRuns`; `ResponseParser.parseReceiptLine(maskPan = true)` ⇒ `maskDigitRuns` su `text` e su `raw` con lo 0x7F trasparente; `SimEvent.FrameOut` ⇒ `maskFrame`; `SimEvent.FrameIn` (richieste dell'ECR, senza PAN) e i byte di controllo ⇒ invariati. Le righe S passano quindi con la stessa maschera dal parser (`ReceiptLine.raw`) e da `maskFrame` (log traffico e log del simulatore).
 
 ### 3.9 `model/CommandCode.kt` [WP0]
 
@@ -4192,7 +4195,7 @@ class ScriptedTransport(private val scope: CoroutineScope, private val wallClock
 | `FrameCodecTest` | tutte le righe di A§9.3 (encode AB std `02 41 42 03 7C`; round trip in ogni modalità; LRC corrotto `HELLO` `3D`→`C2` = Application `validLrc=false`; `[06]`, `[15]`; `decode(encodeControl)`; `[06 00]`, `[06 03 FF]`, `[15 99 42]`; vuoto; `[01]`; progress `"ELABORAZIONE...     "`; STX senza ETX; STX ETX senza LRC; `[99 00]`; byte dopo LRC; concatenati; SOH senza EOT); frame reali A§9.8: P [1] LRC `2F`, R [37] LRC `2C`, `s` TID zero in stx = `02 30…73 03 3D` |
 | `FrameSplitterTest` | L§13.3 seconda tabella: `06 03 7A` ⇒ WIRE; `06 03 78` ⇒ SAME_AS_APP; `06 03 00` ⇒ MISMATCH (tollerante) / Discarded 1 byte (rigido); `06 FF 06 03 7A`+esito ⇒ Discarded `06 FF`, ACK, esito; `06`+`02…` ⇒ Control BARE ed esito integro; **`06 03`+`02…` ⇒ Control(ACK, BARE) di 2 byte ed esito integro** (prima: MISMATCH che consumava lo STX); `06 03` da solo ⇒ attende; `flushBareControl` con solo `06` ⇒ ACK BARE; **asimmetria NAK**: `15`+`02…` ⇒ Discarded(1, AMBIGUOUS_NAK) ed esito integro; `15 03`+`02…` ⇒ Discarded(2, AMBIGUOUS_NAK) ed esito integro; `15 03 00` ⇒ Discarded(3, AMBIGUOUS_NAK) sia `TOLERANT` sia `STRICT`; `15 03 69` e `15 03 6B` ⇒ Control(NAK); `flushBareControl` con solo `15` o `15 03` ⇒ Discarded(AMBIGUOUS_NAK); LRC uguale a `02` (`"123456780E00"+"0"*60` in std, A§3.1) non interpretato; STX annidato ⇒ RESYNC; rumore consecutivo accorpato; OVERSIZED; righe reali [2][3][4] concatenate ⇒ ACK, Progress, Application con `matchingModes == {STX}`; **equivalenza** chunk unico vs byte per byte sulla stessa sequenza (comprese le nuove righe) |
 | `HexTest` | `spaced` maiuscolo e minuscolo con spazio finale (`"06 03 7a "`); `parse` tollerante; `printable` con `<STX>`/`<ETX>`/`<1B>` |
-| `PanMaskerTest` | `maskForDisplay("4111111111111111")` = `"************1111"`; `("123")` = `"****"`; `("492917******0114")` = `"******0114"` (A§9.10); `maskFixedWidth("000558278******4768")` = `"***************4768"`; `maskApplicationPayload(E22_CLEAR)` maschera solo pos 13-31; `E4` (KO) invariato; `e`, `c`, `v` approvati mascherati; **`i` con esito `01` (`I75_KO_CLEAR`) mascherato** (nessun ramo KO, A§4.5.4); riga `S` `RECEIPT_PAN` ⇒ `4111111111111111` non compare; `s` e `T` invariati (le loro lunghe sequenze di cifre restano); `maskDigitRuns` su un frammento `E22_CLEAR` scartato ⇒ nessuna sequenza di 13+ cifre in chiaro; 12 cifre invariate; `maskFrame` lascia l'LRC originale |
+| `PanMaskerTest` | `maskForDisplay("4111111111111111")` = `"************1111"`; `("123")` = `"****"`; `("492917******0114")` = `"******0114"` (A§9.10); `maskFixedWidth("000558278******4768")` = `"***************4768"`; `maskApplicationPayload(E22_CLEAR)` maschera solo pos 13-31; `E4` (KO) invariato; `e`, `c`, `v` approvati mascherati; **`i` con esito `01` (`I75_KO_CLEAR`) mascherato** (nessun ramo KO, A§4.5.4); riga `S` `RECEIPT_PAN` ⇒ `4111111111111111` non compare; **riga `S` (e codice sconosciuto) con il PAN spezzato da 0x7F** ⇒ mascherato con lo 0x7F al suo posto, sia in `maskApplicationPayload` (uguale a `ReceiptLine.raw` del parser) sia in `maskFrame`; `s` e `T` invariati (le loro lunghe sequenze di cifre restano); `maskDigitRuns` su un frammento `E22_CLEAR` scartato ⇒ nessuna sequenza di 13+ cifre in chiaro; 12 cifre invariate; `maskFrame` lascia l'LRC originale |
 
 **WP2, `ecr17/message`**
 
