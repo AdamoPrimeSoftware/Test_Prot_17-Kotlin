@@ -2,6 +2,7 @@ package it.prime.protocollo17.ecr17.wire
 
 import it.prime.protocollo17.ecr17.message.ResponseParser
 import it.prime.protocollo17.ecr17.testing.Frames
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -280,10 +281,11 @@ class PanMaskerTest {
     /** Byte oltre l'LRC e frame senza ETX: nessun PAN in chiaro in nessun caso. */
     @Test
     fun `maskFrame con coda o senza ETX`() {
-        // Il payload KO di E4 (35 zeri) resta posizionale e invariato; la coda passa dalla rete di sicurezza.
+        // Il payload KO di E4 (35 zeri) resta posizionale e invariato; la coda è un frammento senza STX, e la sequenza
+        // che lo finisce perde tutte le cifre (§3.8).
         val withTail = Frames.app(Frames.E4) + ascii("4111111111111111")
         val maskedTail = text(PanMasker.maskFrame(withTail))
-        assertEquals(text(Frames.app(Frames.E4)) + "************1111", maskedTail)
+        assertEquals(text(Frames.app(Frames.E4)) + "****************", maskedTail)
 
         val truncated = byteArrayOf(0x02) + ascii(Frames.E22_CLEAR)
         val maskedTruncated = text(PanMasker.maskFrame(truncated))
@@ -391,7 +393,207 @@ class PanMaskerTest {
         assertEquals("80SPAN ********\u007F****1111\u0003", text(PanMasker.maskFrame(noStx)))
 
         val withTail = Frames.app(Frames.E4) + ascii("41111111\u007F11111111")
-        assertEquals(text(Frames.app(Frames.E4)) + "********\u007F****1111", text(PanMasker.maskFrame(withTail)))
+        assertEquals(text(Frames.app(Frames.E4)) + "********\u007F********", text(PanMasker.maskFrame(withTail)))
+    }
+
+    // ─── A cavallo dei frame: righe S tagliate e frammenti ───────────────────
+
+    private val header = "100029120S"
+
+    /** Testo di una riga S reale (dalla pos 11), 0x7F e ESC compresi. */
+    private fun textOf(payload: String) = payload.substring(10)
+
+    /** Una riga S mascherata con la coda della precedente, e la coda che lascia alla successiva. */
+    private fun maskChain(payloads: List<String>): List<String> {
+        var carry = 0
+        return payloads.map { payload ->
+            val masked = text(PanMasker.maskReceiptPayload(ascii(payload), carry))
+            carry = PanMasker.receiptCarryAfter(ascii(payload), carry)
+            masked
+        }
+    }
+
+    /**
+     * Vettore costruito dalla cattura (A§9.11, formato a colonne): il flusso reale pagamenti:117-123 ritagliato in due
+     * righe S piene con il taglio in ogni punto del PAN. Prima ogni riga era mascherata da sola: `438746` | `******9993`
+     * erano due sequenze sotto la soglia e il BIN restava in chiaro nel testo, nel grezzo e nel log traffico (M9). Lo
+     * stesso con un PAN in chiaro (terminali che non lo troncano, A§9.9): nessuna delle prime 12 cifre resta visibile.
+     */
+    @Test
+    fun `PAN tagliato tra due righe S piene, in ogni punto`() {
+        val stream = textOf(PosMockReceipts.PAGAMENTI_117) + textOf(PosMockReceipts.PAGAMENTI_120) +
+            textOf(PosMockReceipts.PAGAMENTI_123)
+        for (pan in listOf("438746******9993", "4387461234569993")) {
+            val source = stream.replace("438746******9993", pan)
+            val panAt = source.indexOf(pan)
+            for (cut in panAt..panAt + pan.length) {
+                val first = header + source.substring(cut - 200, cut)
+                val second = header + source.substring(cut, cut + 200)
+                val joined = maskChain(listOf(first, second)).joinToString("") { textOf(it) }
+                val maskedPan = joined.substring(200 - (cut - panAt), 200 - (cut - panAt) + pan.length)
+                assertEquals("*".repeat(12), maskedPan.take(12), "taglio a ${cut - panAt} di $pan: $maskedPan")
+                assertFalse("438746" in joined, "BIN in chiaro con il taglio a ${cut - panAt}")
+            }
+        }
+        // Senza la coda della riga prima (riga mascherata da sola) la seconda metà resterebbe in chiaro.
+        val clear = stream.replace("438746******9993", "4387461234569993")
+        val cut = clear.indexOf("4387461234569993") + 6
+        val alone = text(PanMasker.maskReceiptPayload(ascii(header + clear.substring(cut, cut + 200))))
+        assertTrue("1234569993" in alone, "il vettore deve dimostrare il limite senza coda: $alone")
+    }
+
+    /**
+     * Formato a righe da 24 colonne (pagamenti:83-95): ogni frame finisce con una riga intera e il successivo inizia
+     * con 0x7D, quindi nessuna coda resta aperta e le cifre a fine frame restano leggibili (A.I.I.C., AID).
+     */
+    @Test
+    fun `formato a righe, nessuna coda aperta`() {
+        for (payload in PosMockReceipts.FORMAT_A) {
+            assertEquals(0, PanMasker.receiptCarryAfter(ascii(payload)), payload)
+            assertEquals(maskPayload(payload), text(PanMasker.maskReceiptPayload(ascii(payload), carry = 5)), "testa con 0x7D")
+        }
+        assertTrue(text(PanMasker.maskReceiptPayload(ascii(PosMockReceipts.PAGAMENTI_83))).endsWith("A.I.I.C.     88105100004"))
+        assertTrue(text(PanMasker.maskReceiptPayload(ascii(PosMockReceipts.PAGAMENTI_86))).endsWith("A*********1010"))
+    }
+
+    /**
+     * Formato a colonne reale (pagamenti:117-126) mascherato riga per riga con la coda: il PAN esce come sull'esito, e
+     * l'AID tagliato (`A0000` | `000031010`) come se fosse intero. Il prezzo accettato: le cifre in coda a una riga
+     * piena spariscono anche quando non sono un PAN (`Data 08` ⇒ `Data **`), perché la riga esce prima che arrivi la
+     * successiva.
+     */
+    @Test
+    fun `formato a colonne reale, coda e testa`() {
+        val masked = maskChain(PosMockReceipts.FORMAT_B)
+        assertTrue(masked[0].endsWith("A.I.I.C.     88105100003Data **"), masked[0])
+        assertTrue(masked[1].startsWith("${header}/07/25  Ora 12:28"), masked[1])
+        assertTrue("PAN     ************9993" in masked[1], masked[1])
+        assertTrue(masked[1].endsWith("A.ID      A****"), masked[1])
+        assertTrue(masked[2].startsWith("$header*****1010APPL"), masked[2])
+        assertEquals(PosMockReceipts.PAGAMENTI_126, masked[3], "ultima riga invariata")
+
+        val carries = PosMockReceipts.FORMAT_B.runningFold(0) { carry, p -> PanMasker.receiptCarryAfter(ascii(p), carry) }
+        assertEquals(listOf(0, 2, 4, 0, 0), carries, "coda lasciata da ogni riga")
+    }
+
+    /**
+     * La coda si apre solo su una riga piena (200 caratteri) che non chiude lo scontrino: le righe una per frame
+     * (simulatore, spec Nexi) e l'ultima riga non perdono le ultime 4 cifre di un PAN in coda.
+     */
+    @Test
+    fun `righe corte e ultima riga non aprono la coda`() {
+        assertEquals(0, PanMasker.receiptCarryAfter(ascii(Frames.RECEIPT_PAN)))
+        assertEquals("123456780SCARTA ************1111", text(PanMasker.maskReceiptPayload(ascii(Frames.RECEIPT_PAN))))
+
+        val full = header + "X".repeat(184) + "4111111111111111"
+        assertEquals(200, full.length - 10)
+        assertEquals(16, PanMasker.receiptCarryAfter(ascii(full)))
+        assertEquals(header + "X".repeat(184) + "*".repeat(16), text(PanMasker.maskReceiptPayload(ascii(full))))
+
+        val last = header + "X".repeat(181) + "4111111111111111}}\u001B"
+        assertEquals(0, PanMasker.receiptCarryAfter(ascii(last)))
+        assertEquals(header + "X".repeat(181) + "************1111}}\u001B", text(PanMasker.maskReceiptPayload(ascii(last))))
+
+        // 0x7F in coda è trasparente: la sequenza tocca comunque la fine.
+        val double = header + "X".repeat(187) + "41111111\u007F1111"
+        assertEquals(12, PanMasker.receiptCarryAfter(ascii(double)))
+        assertTrue(text(PanMasker.maskReceiptPayload(ascii(double))).endsWith("********\u007F****"))
+    }
+
+    /** Testa con la coda: sotto la soglia insieme resta invariata; una riga fatta tutta di cifre allunga la coda. */
+    @Test
+    fun `testa con la coda, soglia e riga di sole cifre`() {
+        assertEquals("${header}1234567 TESTO", text(PanMasker.maskReceiptPayload(ascii("${header}1234567 TESTO"), carry = 5)))
+        assertEquals("$header****5678 TESTO", text(PanMasker.maskReceiptPayload(ascii("${header}12345678 TESTO"), carry = 5)))
+        assertEquals("$header*2345 TESTO", text(PanMasker.maskReceiptPayload(ascii("$header*2345 TESTO"), carry = 12)))
+
+        val digits = header + "4111".repeat(50)
+        assertEquals(header + "*".repeat(200), text(PanMasker.maskReceiptPayload(ascii(digits), carry = 3)))
+        assertEquals(203, PanMasker.receiptCarryAfter(ascii(digits), carry = 3))
+    }
+
+    /**
+     * Wire RX, grezzo e testo della stessa riga con la stessa coda: maskFrame (ramo 'S'), maskReceiptPayload e
+     * parseReceiptLine danno la stessa maschera; per gli altri codici la coda non conta.
+     */
+    @Test
+    fun `stessa maschera per frame, payload e parser`() {
+        val payload = PosMockReceipts.PAGAMENTI_123
+        val frame = Frames.app(payload)
+        val masked = text(PanMasker.maskReceiptPayload(ascii(payload), carry = 4))
+        assertEquals("\u0002$masked\u0003", text(PanMasker.maskFrame(frame, receiptCarry = 4)).dropLast(1))
+        assertEquals(masked, text(PanMasker.maskApplicationPayload(ascii(payload), receiptCarry = 4)))
+        assertEquals(textOf(masked), ResponseParser.parseReceiptLine(ascii(payload), maskPan = true, carry = 4).raw)
+        assertArrayEquals(PanMasker.maskFrame(Frames.app(Frames.E22_CLEAR)), PanMasker.maskFrame(Frames.app(Frames.E22_CLEAR), receiptCarry = 9))
+    }
+
+    /** Frame senza ETX (troncato): la coda di una riga S o di un codice sconosciuto può continuare nei byte persi. */
+    @Test
+    fun `frame troncato, coda mascherata per intero`() {
+        assertEquals("\u0002123456780SCARTA ********", text(PanMasker.maskFrame(ascii("\u0002123456780SCARTA 41111111"))))
+        assertEquals("\u0002123456780U********", text(PanMasker.maskFragment(ascii("\u0002123456780U41111111"))))
+        assertEquals(
+            "\u0002123456780S****1111 FINE",
+            text(PanMasker.maskFragment(ascii("\u0002123456780S11111111 FINE"), receiptCarry = 8)),
+            "testa di una riga S troncata con la coda della precedente",
+        )
+        assertEquals("\u0002123456780SCARTA 41111111\u0003X", text(PanMasker.maskFrame(ascii("\u0002123456780SCARTA 41111111\u0003X"))), "con ETX: riga corta")
+    }
+
+    /**
+     * Frammenti senza STX: la coda perde tutte le cifre (può continuare nel pezzo dopo), la testa tutte tranne le ultime
+     * 4 (può chiudere un PAN iniziato prima). Prima `CARTA 4111111` | `111111111 X` restavano in chiaro: 7 e 9 cifre.
+     */
+    @Test
+    fun `maskFragment senza STX, testa e coda`() {
+        assertEquals("CARTA *******", text(PanMasker.maskFragment(ascii("CARTA 4111111"))))
+        assertEquals("*****1111 X", text(PanMasker.maskFragment(ascii("111111111 X"))))
+        assertEquals("****1111 TESTO ********", text(PanMasker.maskFragment(ascii("11111111 TESTO 41111111"))))
+        assertEquals("********\u007F********", text(PanMasker.maskFragment(ascii("41111111\u007F11111111"))), "tutto una sequenza")
+        assertEquals("TESTO 1234 FINE", text(PanMasker.maskFragment(ascii("TESTO 1234 FINE"))), "nessuna cifra ai bordi")
+        assertEquals("1234 X", text(PanMasker.maskFragment(ascii("1234 X"))), "4 cifre in testa: nulla da nascondere")
+        assertEquals("", text(PanMasker.maskFragment(ByteArray(0))))
+        // ETX dentro il frammento (STX perso): lì finiva un frame, la sequenza prima è una coda.
+        assertEquals("*****9120SCARTA ********\u0003X", text(PanMasker.maskFragment(ascii("100029120SCARTA 41111111\u0003X"))))
+    }
+
+    /**
+     * Residuo a fine scambio con più frame (revisione del 2026-10-19): prima i byte dopo il primo LRC passavano solo
+     * dalla rete di sicurezza, e in `<riga S corta>` + `<STX>…PAN 41111111` le 8 cifre restavano in chiaro, mentre lo
+     * stesso frame troncato da solo le mascherava. Ora ogni frame del residuo è mascherato come tale, con la coda
+     * della riga S prima.
+     */
+    @Test
+    fun `residuo con piu frame`() {
+        val short = Frames.app("${header}RIGA BREVE")
+        val blob = short + ascii("\u0002${header}PAN 41111111")
+        assertEquals(text(short) + "\u0002${header}PAN ********", text(PanMasker.maskFragment(blob)))
+
+        val full = Frames.app(header + "X".repeat(186) + "CARTA 41111111")
+        val continued = text(PanMasker.maskFragment(full + ascii("\u0002${header}11111111 FINE")))
+        assertTrue(continued.endsWith("CARTA ********\u0003${text(full).last()}\u0002${header}****1111 FINE"), continued)
+    }
+
+    /**
+     * Riga intera solo se il frame è fatto di righe intere (revisione del 2026-10-19): prima bastavano due righe larghe
+     * uguali dopo un separatore qualsiasi, e un testo con righe accorciate uguali per caso non apriva la coda.
+     */
+    @Test
+    fun `riga intera solo se il frame inizia con un separatore`() {
+        val fooled = header + "A".repeat(174) + "}" + "B".repeat(12) + "}" + "CARTA 411111"
+        assertEquals(210, fooled.length)
+        assertEquals(6, PanMasker.receiptCarryAfter(ascii(fooled)))
+        assertTrue(text(PanMasker.maskReceiptPayload(ascii(fooled))).endsWith("}CARTA ******"))
+        for (payload in PosMockReceipts.FORMAT_A) assertEquals(0, PanMasker.receiptCarryAfter(ascii(payload)), "formato a righe")
+    }
+
+    /** Coda sconosciuta (connessione riusata, byte scartati): la testa mostra solo le ultime 4 cifre, qualunque sia la lunghezza. */
+    @Test
+    fun `coda sconosciuta`() {
+        val carry = PanMasker.UNKNOWN_RECEIPT_CARRY
+        assertEquals("$header***4567 TESTO", text(PanMasker.maskReceiptPayload(ascii("${header}1234567 TESTO"), carry)))
+        assertEquals("$header*2345 TESTO", text(PanMasker.maskReceiptPayload(ascii("${header}12345 TESTO"), carry)))
+        assertEquals("${header}1234 TESTO", text(PanMasker.maskReceiptPayload(ascii("${header}1234 TESTO"), carry)))
     }
 
     /** Overload su byte e su stringa danno lo stesso risultato, e la versione su byte restituisce una copia. */

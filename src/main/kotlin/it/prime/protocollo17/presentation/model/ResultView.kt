@@ -39,6 +39,7 @@ data class ResultView(
     val timeline: List<FieldRow>,
     /** RawPayload.text (ISO-8859-1, PAN mascherato) reso con Hex.printable (<STX>, <xx>). */
     val rawPayload: String?,
+    /** Righe di stampa ricomposte dalle righe S (ReceiptText), non una per frame. */
     val receipt: List<String>,
     val warnings: List<String>,
     /** Avvisi di revisione (POSSIBLE_DUPLICATE, EARLY_RESULT) in evidenza sotto il titolo. */

@@ -48,7 +48,7 @@ object ResultViewMapper {
             exchange = trace?.let { exchangeRows(it, answered) }.orEmpty(),
             timeline = trace?.let(::timelineRows).orEmpty(),
             rawPayload = answered?.let { Hex.printable(it.response.raw.text.toByteArray(Charsets.ISO_8859_1)) },
-            receipt = trace?.receipt?.map { it.text }.orEmpty(),
+            receipt = trace?.receipt?.let(ReceiptText::lines).orEmpty(),
             warnings = trace?.warnings?.map { "${warningLabel(it.code)}: ${it.detail}" }.orEmpty(),
             reviewNotice = answered?.let(::reviewNotice),
             quickActions = answered?.let { quickActions(run.command, it) }.orEmpty(),
@@ -121,7 +121,8 @@ object ResultViewMapper {
         val request = run.request
         return if (request is ReprintRequest && request.target == ReprintTarget.ECR) {
             val lines = outcome.trace.receipt.size
-            if (lines == 1) "1 riga di scontrino ricevuta" else "$lines righe di scontrino ricevute"
+            // Frame, non righe di stampa: la sezione dello scontrino conta le righe ricomposte (ReceiptText).
+            if (lines == 1) "1 riga S ricevuta" else "$lines righe S ricevute"
         } else {
             null
         }

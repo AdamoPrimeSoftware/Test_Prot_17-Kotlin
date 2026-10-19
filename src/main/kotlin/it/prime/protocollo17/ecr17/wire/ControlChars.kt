@@ -21,6 +21,7 @@ object ControlChars {
     const val RECEIPT_DOUBLE_ALT = 0x7E  // righe S a 24 colonne (Ingenico 2025, catture PosMock): a capo + doppia altezza
     const val ZERO = 0x30             // riempitivo '0'
     const val PROGRESS_TEXT_LENGTH = 20
+    const val RECEIPT_TEXT_MAX = 200  // testo di una riga S (pos 11, len 1..200, A§4.5.9): pieno = flusso tagliato
 
     /** Nome simbolico per il log ("STX", "ACK"…), null se non è un carattere di controllo noto. */
     fun nameOf(b: Int): String? = when (b and 0xFF) {

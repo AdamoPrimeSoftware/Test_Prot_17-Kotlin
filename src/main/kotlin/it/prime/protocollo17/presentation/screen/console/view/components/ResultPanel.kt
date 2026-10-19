@@ -223,7 +223,9 @@ private fun previewResult(tone: ResultTone, headline: String, review: String? = 
     exchange = listOf(FieldRow("Invii della richiesta", "1"), FieldRow("Modalità ACK", "ACK esplicito")),
     timeline = listOf(FieldRow("Invio richiesta", "09:35:05.453", "+54 ms")),
     rawPayload = "025757330E00***************4768CLIR484320770947200000000023000004000055",
-    receipt = emptyList(), warnings = listOfNotNull(review?.let { "Possibile doppio addebito: esito dopo un reinvio" }),
+    // Righe di stampa già ricomposte (ReceiptText): 24 colonne, come sulle catture Ingenico (A§9.11).
+    receipt = listOf("          VISA          ", "Data 08/07/25  Ora 12:28", "PAN     ************9993", "IMPORTO EUR         0,05"),
+    warnings = listOfNotNull(review?.let { "Possibile doppio addebito: esito dopo un reinvio" }),
     reviewNotice = review,
     quickActions = listOf(QuickAction("Usa STAN in Storno (S)", CommandCode.REVERSAL, FieldKey.STAN, "000004")),
     journalError = null, finishedAt = 1_760_000_000_000,

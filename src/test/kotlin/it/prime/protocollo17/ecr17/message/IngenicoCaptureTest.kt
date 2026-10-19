@@ -12,6 +12,17 @@ import it.prime.protocollo17.ecr17.model.StatusResponse
 import it.prime.protocollo17.ecr17.model.TerminalIds
 import it.prime.protocollo17.ecr17.model.Verdict
 import it.prime.protocollo17.ecr17.testing.Frames
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_117
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_120
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_123
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_126
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_140
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_160
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_83
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_86
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_89
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_92
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts.PAGAMENTI_95
 import it.prime.protocollo17.ecr17.wire.LrcMode
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -167,11 +178,16 @@ class IngenicoCaptureTest {
         Captured("pagamenti:46 E", "100029120E00000************9993CLE40384 1871120288105100003000003000039000000000050000000000", 0x6D),
         Captured("pagamenti:49 E1", "000000000E1", 0x3A),
         Captured("pagamenti:83 S", PAGAMENTI_83, 0x61),
+        Captured("pagamenti:86 S", PAGAMENTI_86, 0x0B),
+        Captured("pagamenti:89 S", PAGAMENTI_89, 0x36),
+        Captured("pagamenti:92 S", PAGAMENTI_92, 0x55),
         Captured("pagamenti:95 S", PAGAMENTI_95, 0x0F),
         Captured("pagamenti:98 s", "000000000s", 0x3D),
         Captured("pagamenti:100 s", "100029120s00000000000807251125OPERATIVE01.00.14_B2807_2807", 0x3A),
         Captured("pagamenti:106 E", "100029120E00000438746******9993CLI37708 1891226288105100003000002000038000", 0x65),
+        Captured("pagamenti:117 S", PAGAMENTI_117, 0x7B),
         Captured("pagamenti:120 S", PAGAMENTI_120, 0x48),
+        Captured("pagamenti:123 S", PAGAMENTI_123, 0x0D),
         Captured("pagamenti:126 S", PAGAMENTI_126, 0x4B),
         Captured("pagamenti:140 S", PAGAMENTI_140, 0x39),
         Captured("pagamenti:160 S", PAGAMENTI_160, 0x32),
@@ -354,30 +370,9 @@ class IngenicoCaptureTest {
     private fun parsePosMock(row: String, maskPan: Boolean = false): PaymentResponse =
         assertInstanceOf(PaymentResponse::class.java, ResponseParser.parse(posMock(row), CommandCode.PAYMENT, maskPan))
 
+    // Le righe S reali (PAGAMENTI_83 … PAGAMENTI_160) stanno in PosMockReceipts: le usano anche i test del
+    // mascheramento a cavallo dei frame e della vista dello scontrino ricomposto.
     private companion object {
-        /** Prima riga dello scontrino di una X (24 colonne separate da 0x7D, 0x7E prima di PAGAMENTO). */
-        const val PAGAMENTI_83 = "100029120S}       MASTERCARD       }         MCCHIP         ~        PAGAMENTO       }" +
-            "       THANK YOU        }       WORLDLINE        }                        }Eserc.   29122912       }" +
-            "A.I.I.C.     88105100004"
-
-        /** Ultima riga di soli avanzamenti carta: sei blocchi "}" + 24 spazi, poi ESC. */
-        val PAGAMENTI_95 = "100029120S" + ("}" + " ".repeat(24)).repeat(6) + "\u001B"
-
-        /** Ultima riga dell'altro formato (colonne senza 0x7D): 0x7F prima di IMPORTO EUR, poi "}}" + ESC. */
-        const val PAGAMENTI_126 = "100029120S \u007FIMPORTO EUR         0,05                          TRANSACTION APPROVED" +
-            "                            ARRIVEDERCI E GRAZIE  CONTRATTO #12345        }}\u001B"
-
-        /** Righe S intermedie del formato a colonne senza separatori, con il PAN troncato (BIN + ultime 4). */
-        const val PAGAMENTI_120 = "100029120S/07/25  Ora 12:28TML 10002912 STAN 000003Mod. Online     CTLS ICCAUT. 52658  " +
-            "OPER. 000039AUTH.RESP.CODE        00VISA CONTACTLESS        PAN     438746******9993SCAD                ****" +
-            "A.ID      A0000"
-        const val PAGAMENTI_140 = "100029120S/07/25  Ora 12:32TML 10002912 STAN 000004Mod. Online     CTLS ICCAUT. 76547  " +
-            "OPER. 000040AUTH.RESP.CODE        00PAN     518619******1017SCAD                ****A.ID      " +
-            "A0000000041010APPL           "
-        const val PAGAMENTI_160 = "100029120S/07/25  Ora 12:35TML 10002912 STAN 000005Mod. Online     CTLS ICCAUT. 92815  " +
-            "OPER. 000041AUTH.RESP.CODE        00PAN  679999*********3224SCAD                ****A.ID      " +
-            "A0000000043060APPL           "
-
         /** Risposta 't' del DESK3200 TID 02575733 (12/08/2026). */
         const val STATUS_3 = "025757330t00000000001208261050P/NDESK3200EM4                   S/N182592207401594" +
             "MAN16.08EMV3242AREVFt___ECR47.00SSL31.71EXT35.62EDL39.00                        " +

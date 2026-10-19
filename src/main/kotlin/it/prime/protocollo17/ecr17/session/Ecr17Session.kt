@@ -112,6 +112,25 @@ internal class Ecr17Session(
         private var pending: WireFrame.Application? = null
 
         private var receiptEndSeen = false
+
+        /**
+         * Coda della riga S precedente rimasta aperta (PanMasker.receiptCarryAfter): la riga dopo maschera la propria
+         * testa come seguito della stessa sequenza, nell'evento Wire RX e nel testo (M9 a cavallo dei frame, §3.8).
+         * Si aggiorna con ogni riga S nell'ordine del filo e nel dubbio sale, mai scende: una riga rifiutata (NAK) non
+         * la abbassa, e su una connessione riusata o dopo byte scartati la coda vera non si conosce (UNKNOWN: la testa
+         * della riga dopo mostra solo le ultime 4 cifre). Prima partiva sempre da 0, e lo scontrino rimasto a metà di
+         * un comando precedente arrivava come orfano con la testa in chiaro.
+         */
+        private var receiptCarry = if (spec.freshConnection) 0 else PanMasker.UNKNOWN_RECEIPT_CARRY
+
+        /**
+         * Ultima riga S vista e la coda con cui è stata mascherata. Una copia identica che arriva subito dopo è lo
+         * stesso frame mandato di nuovo (ACK non accettato o tardivo, ritrasmissione dopo NAK) e continua la stessa
+         * riga di prima, non sé stessa: prima la copia prendeva la coda lasciata dall'originale (spesso 0) e mostrava
+         * in chiaro la testa che l'originale aveva mascherato.
+         */
+        private var lastReceipt: ByteArray? = null
+        private var lastReceiptCarryIn = 0
         private var overflowReported = false
         private var ackDeadline: ComparableTimeMark = timeSource.markNow()
 
@@ -158,6 +177,7 @@ internal class Ecr17Session(
                     val item = orphans.next() ?: break
                     report(item)
                     val app = (item as? SplitItem.Parsed)?.frame as? WireFrame.Application ?: continue
+                    if (app.replyCode == RECEIPT_CODE) advanceReceiptCarry(app, receiptCarryFor(app), accepted = true)
                     if (app.replyCode in RESULT_FAMILY) possibleLostResult(app, where = "prima dell'invio")
                 }
             } finally {
@@ -639,8 +659,13 @@ internal class Ecr17Session(
             return false
         }
 
-        /** NAK + APP_LRC_INVALID: il terminale ritrasmetterà il frame. */
+        /**
+         * NAK + APP_LRC_INVALID: il terminale ritrasmetterà il frame. Una riga S rifiutata alza la coda ma non la
+         * abbassa: la ritrasmissione ha la stessa testa (che continua la riga prima), e se il terminale passa oltre la
+         * riga dopo continua questa. Nel dubbio si maschera di più, mai di meno (M9).
+         */
         private suspend fun rejectFrame(app: WireFrame.Application) {
+            if (app.replyCode == RECEIPT_CODE) advanceReceiptCarry(app, receiptCarryFor(app), accepted = false)
             sendControl(ControlChars.NAK)
             val check = app.check
             val lrc = hex2(check.received)
@@ -679,11 +704,32 @@ internal class Ecr17Session(
             )
         }
 
+        /** Stessa coda dell'evento Wire RX appena emesso da report(): grezzo, testo ed evento coincidono (M9). */
         private fun receiveReceiptLine(app: WireFrame.Application): ReceiptLine {
-            val line = ResponseParser.parseReceiptLine(app.payload, maskPan = true)
+            val carry = receiptCarryFor(app)
+            val line = ResponseParser.parseReceiptLine(app.payload, maskPan = true, carry = carry)
+            advanceReceiptCarry(app, carry, accepted = true)
             if (line.isEnd) receiptEndSeen = true
             trace.receipt(line)
             return line
+        }
+
+        /** Coda con cui mascherare la riga S [app]: per una copia identica dell'ultima, la più alta tra le due. */
+        private fun receiptCarryFor(app: WireFrame.Application): Int {
+            val repeated = lastReceipt?.contentEquals(app.payload) == true
+            return if (repeated) maxOf(lastReceiptCarryIn, receiptCarry) else receiptCarry
+        }
+
+        /**
+         * Dopo una riga S mascherata con [carryIn]: accettata (ACK, o orfana) ⇒ la coda che lascia; rifiutata (NAK) ⇒
+         * mai più bassa di prima, perché la ritrasmissione ha la stessa testa e, se il terminale passa oltre, la riga
+         * dopo continua quella rifiutata.
+         */
+        private fun advanceReceiptCarry(app: WireFrame.Application, carryIn: Int, accepted: Boolean) {
+            val after = PanMasker.receiptCarryAfter(app.payload, carryIn)
+            receiptCarry = if (accepted) after else maxOf(receiptCarry, after)
+            lastReceipt = app.payload
+            lastReceiptCarryIn = carryIn
         }
 
         private fun handleProgress(progress: WireFrame.Progress) {
@@ -723,7 +769,9 @@ internal class Ecr17Session(
         private fun report(item: SplitItem) {
             when (item) {
                 is SplitItem.Discarded -> {
-                    val masked = PanMasker.maskFragment(item.bytes)
+                    val masked = PanMasker.maskFragment(item.bytes, receiptCarry)
+                    // Byte del flusso persi: la riga S dopo può continuare qualcosa che non si è visto (§3.8).
+                    if (item.reason in LOST_TEXT) receiptCarry = maxOf(receiptCarry, PanMasker.UNKNOWN_RECEIPT_CARRY)
                     emitter.emit { seq, at -> ProtocolEvent.Discarded(seq, at, spec.exchangeId, masked, item.reason) }
                     if (item.reason == DiscardReason.AMBIGUOUS_NAK) {
                         trace.warning(
@@ -746,7 +794,10 @@ internal class Ecr17Session(
                 is WireFrame.Application -> Triple(FrameKind.APPLICATION, frame.replyCode, appNote(frame))
                 is WireFrame.Progress -> Triple(FrameKind.PROGRESS, null, null)
             }
-            val bytes = PanMasker.maskFrame(frame.raw)
+            // La coda vale solo per le righe S: per gli altri codici maskFrame la ignora.
+            val receipt = (frame as? WireFrame.Application)?.takeIf { it.replyCode == RECEIPT_CODE }
+            val carry = receipt?.let(::receiptCarryFor) ?: receiptCarry
+            val bytes = PanMasker.maskFrame(frame.raw, carry)
             emitter.emit { seq, at ->
                 ProtocolEvent.Wire(seq, at, spec.exchangeId, FrameDirection.RX, kind, code, bytes, null, note)
             }
@@ -755,7 +806,9 @@ internal class Ecr17Session(
         private fun logResidue(source: FrameSplitter) {
             val residue = source.clear()
             if (residue.isEmpty()) return
-            val masked = PanMasker.maskFragment(residue)
+            // Byte mai elaborati (anche frame interi rimasti nel buffer, come la copia di una riga S già chiusa): la
+            // coda vera non si conosce, quindi la testa di una riga S lì dentro mostra solo le ultime 4 cifre (§3.8).
+            val masked = PanMasker.maskFragment(residue, maxOf(receiptCarry, PanMasker.UNKNOWN_RECEIPT_CARRY))
             emitter.emit { seq, at -> ProtocolEvent.Discarded(seq, at, spec.exchangeId, masked, DiscardReason.NOISE) }
         }
 
@@ -796,6 +849,9 @@ internal class Ecr17Session(
 
         /** Famiglia degli esiti: un orfano di questi codici è una possibile prova di un esito perso (M4). */
         val RESULT_FAMILY: Set<Char> = setOf('E', 'V', 'e', 'i', 'c', 'v')
+
+        /** Scarti che possono contenere testo di una riga S (non i byte di controllo isolati). */
+        val LOST_TEXT: Set<DiscardReason> = setOf(DiscardReason.NOISE, DiscardReason.RESYNC_ON_NEW_START, DiscardReason.OVERSIZED)
 
         /** Tetto del drain: durata ≤ max(5 s, 4 × finestra) e al massimo 20 elementi (§3.21 punto 5). */
         const val DRAIN_MIN_CAP_MS = 5_000L

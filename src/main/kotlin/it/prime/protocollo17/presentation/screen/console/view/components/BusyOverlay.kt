@@ -37,7 +37,9 @@ import it.prime.protocollo17.domain.model.command.CommandTitles
 import it.prime.protocollo17.ecr17.model.CommandCode
 import it.prime.protocollo17.ecr17.model.ExchangePhase
 import it.prime.protocollo17.ecr17.model.PaymentRequest
+import it.prime.protocollo17.ecr17.model.ReceiptLine
 import it.prime.protocollo17.presentation.components.ScrollableColumn
+import it.prime.protocollo17.presentation.model.ReceiptText
 import it.prime.protocollo17.presentation.model.ResultViewMapper
 import it.prime.protocollo17.presentation.state.RunOrigin
 import it.prime.protocollo17.presentation.state.RunningCommand
@@ -84,9 +86,11 @@ fun BusyOverlay(running: RunningCommand, endpoint: String, onCancel: () -> Unit,
                     Text(it, fontFamily = FontFamily.Monospace, fontSize = 20.sp, color = MaterialTheme.colorScheme.primary)
                 }
                 if (running.receipt.isNotEmpty()) {
+                    // Righe di stampa, non una per riga S (§6.9): il cronometro ricompone ogni 500 ms, lo scontrino no.
+                    val receipt = remember(running.receipt) { ReceiptText.lines(running.receipt).joinToString("\n") }
                     SelectionContainer {
                         Text(
-                            running.receipt.joinToString("\n") { it.text },
+                            receipt,
                             fontFamily = FontFamily.Monospace,
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -122,7 +126,7 @@ private fun phaseText(running: RunningCommand, endpoint: String): String = when 
     ExchangePhase.COMPLETED -> "Completato"
 }
 
-/** "00:23 / 02:00": verso il timeout esito dalla prima attesa dell'esito, verso il timeout ACK durante l'handshake. */
+/** "00:23 / 03:00": verso il timeout esito dalla prima attesa dell'esito, verso il timeout ACK durante l'handshake. */
 private fun chronometer(running: RunningCommand, now: Long): String {
     val resultWait = running.resultWaitStartedAt
     return when {
@@ -145,8 +149,15 @@ private fun BusyOverlayPreview() {
                     command = CommandCode.PAYMENT, request = PaymentRequest(amountCents = 10), origin = RunOrigin.CONSOLE,
                     attemptId = "a1", startedAt = now - 25_000, phase = ExchangePhase.AWAITING_RESULT, phaseAt = now - 23_000,
                     sends = 1, implicitGoAhead = true, resultWaitStartedAt = now - 23_000, lastProgress = "OPERAZIONE IN CORSO ",
-                    receipt = emptyList(), warnings = emptyList(), cancelRequested = false,
-                    ackTimeoutMs = 2_000, responseTimeoutMs = 120_000,
+                    receipt = listOf(
+                        ReceiptLine(raw = "SIMULATORE P17", text = "SIMULATORE P17", doubleHeight = false, isEnd = false),
+                        ReceiptLine(
+                            raw = "PAGAMENTO CARTA ************1111", text = "PAGAMENTO CARTA ************1111",
+                            doubleHeight = false, isEnd = false,
+                        ),
+                    ),
+                    warnings = emptyList(), cancelRequested = false,
+                    ackTimeoutMs = 2_000, responseTimeoutMs = 180_000,
                 ),
                 endpoint = "192.168.1.131:5577",
                 onCancel = {},

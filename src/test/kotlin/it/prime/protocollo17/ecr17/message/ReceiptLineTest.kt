@@ -1,6 +1,7 @@
 package it.prime.protocollo17.ecr17.message
 
 import it.prime.protocollo17.ecr17.testing.Frames
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -160,5 +161,50 @@ class ReceiptLineTest {
         assertTrue(line.raw.contains('\u007F'), "il grezzo conserva lo 0x7F")
         assertEquals("PAN ********\u007F****1111", line.raw)
         assertEquals("PAN ************1111", line.text)
+    }
+
+    // ─── Righe S come pezzi di un flusso (A§9.11) ────────────────────────────────
+
+    /**
+     * Una riga piena (200 caratteri) che non chiude lo scontrino continua nella successiva: è il taglio per dimensione
+     * dei due formati Ingenico (quello a colonne anche a metà campo). Le righe più corte, come quelle del simulatore,
+     * e l'ultima riga restano a sé: la vista non le unisce alla successiva.
+     */
+    @Test
+    fun `continuesInNext solo per le righe piene non finali`() {
+        for (payload in listOf(PosMockReceipts.PAGAMENTI_83, PosMockReceipts.PAGAMENTI_117, PosMockReceipts.PAGAMENTI_123)) {
+            assertTrue(ResponseParser.parseReceiptLine(p(payload)).continuesInNext, payload)
+        }
+        for (payload in listOf(PosMockReceipts.PAGAMENTI_95, PosMockReceipts.PAGAMENTI_126, Frames.RECEIPT, Frames.RECEIPT_END)) {
+            assertFalse(ResponseParser.parseReceiptLine(p(payload)).continuesInNext, payload)
+        }
+        assertFalse(ResponseParser.parseReceiptLine(p("123456780S" + "X".repeat(199) + "\u001B")).continuesInNext, "piena ma finale")
+        assertFalse(ResponseParser.parseReceiptLine(p("123456780S" + "X".repeat(199))).continuesInNext, "199 caratteri")
+    }
+
+    /**
+     * M9 a cavallo dei frame: con la coda lasciata aperta dalla riga precedente (`carry`, tenuta dalla sessione) la testa
+     * di questa riga è il seguito dello stesso PAN, e ne restano solo le ultime 4. Grezzo e testo derivano dallo stesso
+     * payload mascherato, e la fine scontrino si riconosce anche dopo il mascheramento.
+     */
+    @Test
+    fun `carry maschera la testa come seguito del PAN`() {
+        val payload = p("123456780S11111111 FINE}}\u001B")
+        val line = ResponseParser.parseReceiptLine(payload, maskPan = true, carry = 8)
+        assertEquals("****1111 FINE}}\u001B", line.raw)
+        assertEquals("****1111 FINE", line.text)
+        assertTrue(line.isEnd)
+        assertEquals("11111111 FINE", ResponseParser.parseReceiptLine(payload, maskPan = true).text, "senza coda: 8 cifre, sotto la soglia")
+        assertEquals("11111111 FINE", ResponseParser.parseReceiptLine(payload, maskPan = false, carry = 8).text, "maskPan = false")
+    }
+
+    /** Riga piena con il PAN in coda (anche spezzato da 0x7F): può continuare, quindi tutte le cifre spariscono. */
+    @Test
+    fun `riga piena con il PAN in coda`() {
+        val line = ResponseParser.parseReceiptLine(p("123456780S" + "X".repeat(183) + "41111111\u007F11111111"), maskPan = true)
+        assertTrue(line.continuesInNext)
+        assertEquals("X".repeat(183) + "********\u007F********", line.raw)
+        assertEquals("X".repeat(183) + "*".repeat(16), line.text)
+        assertTrue(line.doubleHeight)
     }
 }

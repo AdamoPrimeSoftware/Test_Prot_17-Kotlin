@@ -1,5 +1,6 @@
 package it.prime.protocollo17.ecr17.model
 
+import it.prime.protocollo17.ecr17.wire.ControlChars
 import java.math.BigDecimal
 import java.time.LocalDateTime
 
@@ -75,13 +76,24 @@ data class DccInfo(
     val precisionRaw: String, val precision: Int?,       // decimali dell'IMPORTO, non del tasso
 )
 
-/** Riga di scontrino 'S' (A§4.5.9). */
+/**
+ * Riga di scontrino 'S' (A§4.5.9): un frame, non una riga di stampa. Le righe S sono pezzi di un unico flusso, che
+ * la vista ricompone (formato a righe da 24 colonne con 0x7D in testa a ogni riga, o colonne senza separatori in
+ * frame da 200 caratteri tagliati a metà campo, A§9.11); il log traffico le mostra una per frame.
+ */
 data class ReceiptLine(
     val raw: String,          // payload dalla pos 11, ISO-8859-1
     val text: String,         // 0x7D e 0x7E → '\n', 0x7F rimosso, ESC finale e coda di a capo/spazi rimossi
     val doubleHeight: Boolean,
     val isEnd: Boolean,       // l'ultimo byte era ESC (0x1B): ultima riga dello scontrino
-)
+) {
+    /**
+     * Testo pieno (200 caratteri, il massimo della pos 11) e scontrino non chiuso: il terminale ha tagliato il flusso
+     * per dimensione e la riga S successiva lo continua, anche a metà di un campo. Le righe una per frame (simulatore,
+     * spec Nexi) sono più corte e restano righe a sé.
+     */
+    val continuesInNext: Boolean get() = !isEnd && raw.length >= ControlChars.RECEIPT_TEXT_MAX
+}
 
 // ─── Gerarchia delle risposte ────────────────────────────────────────────────────
 

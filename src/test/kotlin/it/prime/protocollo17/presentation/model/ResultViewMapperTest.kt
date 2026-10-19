@@ -11,7 +11,9 @@ import it.prime.protocollo17.ecr17.model.FieldId
 import it.prime.protocollo17.ecr17.model.ReceiptLine
 import it.prime.protocollo17.ecr17.model.ReprintRequest
 import it.prime.protocollo17.ecr17.model.ReprintTarget
+import it.prime.protocollo17.ecr17.message.ResponseParser
 import it.prime.protocollo17.ecr17.testing.Frames
+import it.prime.protocollo17.ecr17.testing.PosMockReceipts
 import it.prime.protocollo17.presentation.UiFixtures
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -90,8 +92,29 @@ class ResultViewMapperTest {
                 request = ReprintRequest(target = ReprintTarget.ECR),
             ),
         )
-        assertEquals("2 righe di scontrino ricevute", reprint.detail)
+        assertEquals("2 righe S ricevute", reprint.detail)
         assertEquals(listOf("riga 1", "riga 2"), reprint.receipt)
+    }
+
+    /**
+     * Lo scontrino della vista è ricomposto (ReceiptText): due righe S reali del formato a righe da 24 colonne (A§9.11)
+     * diventano 16 righe di stampa, senza la riga vuota che il vecchio join con '\n' metteva a ogni confine.
+     */
+    @Test
+    fun `scontrino ricomposto dalle righe S`() {
+        val lines = listOf(PosMockReceipts.PAGAMENTI_83, PosMockReceipts.PAGAMENTI_86)
+            .map { ResponseParser.parseReceiptLine(it.toByteArray(Charsets.ISO_8859_1)) }
+        val reprint = ResultViewMapper.map(
+            UiFixtures.finished(
+                CommandOutcome.Acknowledged(CommandCode.REPRINT, UiFixtures.trace(CommandCode.REPRINT, receipt = lines)),
+                request = ReprintRequest(target = ReprintTarget.ECR),
+            ),
+        )
+        assertEquals("2 righe S ricevute", reprint.detail)
+        assertEquals(16, reprint.receipt.size, reprint.receipt.joinToString("\n"))
+        assertTrue(reprint.receipt.all { it.length == 24 }, "nessuna riga vuota ai confini: ${reprint.receipt}")
+        assertEquals("A.I.I.C.     88105100004", reprint.receipt[7])
+        assertEquals("Data 08/07/25  Ora 11:21", reprint.receipt[8])
     }
 
     /** Le quattro famiglie negative non si confondono: non inviato, NAK, nessuna risposta, sconosciuto. */

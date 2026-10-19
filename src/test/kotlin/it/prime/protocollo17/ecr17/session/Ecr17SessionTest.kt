@@ -1021,8 +1021,155 @@ class Ecr17SessionTest {
 
         val texts = h.discarded.map { String(it.bytes, Charsets.ISO_8859_1) }
         assertTrue(h.discarded.any { it.reason == DiscardReason.RESYNC_ON_NEW_START }, "frammento scartato per resync: $texts")
-        assertEquals(2, texts.count { "********\u007F****1111" in it }, "frammento e rumore mascherati: $texts")
-        texts.forEach { assertFalse("41111111" in it, "metà del PAN in chiaro in un Discarded: $it") }
+        // Frame troncato e rumore in coda sono pezzi tagliati: la sequenza che tocca la fine perde tutte le cifre (§3.8).
+        assertEquals(2, texts.count { "********\u007F********" in it }, "frammento e rumore mascherati: $texts")
+        texts.forEach { assertFalse("41111111" in it || "11111111" in it, "metà del PAN in chiaro in un Discarded: $it") }
+    }
+
+    // ─── M9 a cavallo dei frame (§3.8) ───────────────────────────────────────
+
+    /** Riga S piena (200 caratteri) che finisce a metà del PAN, come nel formato a colonne Ingenico (A§9.11). */
+    private val cutFirst = "025757330S" + "X".repeat(186) + "CARTA 41111111"
+    private val cutSecond = "025757330S11111111 FINE}}\u001B"
+
+    private fun ProtocolEvent.Wire.text() = String(bytes, Charsets.ISO_8859_1)
+
+    /** Nessuna metà del PAN in chiaro in eventi Wire RX, eventi Receipt e trace. */
+    private fun Harness.assertNoPanHalves() {
+        val outputs = wireRx.map { it.text() } + events.filterIsInstance<ProtocolEvent.Receipt>()
+            .flatMap { listOf(it.line.raw, it.line.text) } + trace.build(0).receipt.flatMap { listOf(it.raw, it.text) }
+        outputs.forEach { assertFalse("41111111" in it || "11111111" in it, "metà del PAN in chiaro: $it") }
+    }
+
+    /**
+     * Un PAN tagliato tra due righe S consecutive. Prima ogni riga era mascherata da sola: `41111111` | `11111111`
+     * erano due sequenze sotto la soglia di 13 e il PAN usciva in chiaro nell'evento Wire RX (log traffico), nella riga
+     * S e nella trace. Ora la coda della riga piena perde tutte le cifre e la testa della successiva tutte tranne le
+     * ultime 4, con la stessa maschera in Wire RX, evento Receipt e trace.
+     */
+    @Test
+    fun `SE-54 PAN tagliato tra due righe S`() = runTest {
+        val h = harness(options = Frames.fast.copy(ecrPrinting = true))
+        h.transport.onApplicationFrame(bytes(0, Frames.ACKW, app(Frames.E22)), bytes(30, app(cutFirst), app(cutSecond)))
+
+        success(h.run())
+
+        val lines = h.trace.build(0).receipt
+        assertEquals(2, lines.size)
+        assertTrue(lines[0].text.endsWith("CARTA ********"), lines[0].text)
+        assertEquals("****1111 FINE", lines[1].text)
+        assertEquals(lines, h.events.filterIsInstance<ProtocolEvent.Receipt>().map { it.line }, "eventi = trace")
+        val wireS = h.wireRx.filter { it.code == 'S' }
+        assertEquals(lines.map { it.raw }, wireS.map { it.text().substring(11, it.bytes.size - 2) }, "Wire RX = grezzo della riga")
+        h.assertNoPanHalves()
+        h.assertNoWarning(WarningCode.RECEIPT_END_MISSING)
+    }
+
+    /**
+     * La seconda riga arriva con l'LRC errato (NAK) e poi corretta: la ritrasmissione continua ancora la riga prima,
+     * quindi resta mascherata. Una riga rifiutata non abbassa mai la coda.
+     */
+    @Test
+    fun `SE-55 riga S rifiutata e ritrasmessa, la coda resta`() = runTest {
+        val h = harness(options = Frames.fast.copy(ecrPrinting = true))
+        h.transport.onApplicationFrame(
+            bytes(0, Frames.ACKW, app(Frames.E22)),
+            bytes(30, app(cutFirst), corruptLrc(app(cutSecond)), app(cutSecond)),
+        )
+
+        success(h.run())
+
+        h.assertWarning(WarningCode.APP_LRC_INVALID)
+        val wireS = h.wireRx.filter { it.code == 'S' }
+        assertEquals(3, wireS.size)
+        wireS.drop(1).forEach { assertTrue("****1111 FINE" in it.text(), it.text()) }
+        assertEquals("****1111 FINE", h.trace.build(0).receipt.last().text)
+        h.assertNoPanHalves()
+    }
+
+    /** Righe S stantie arrivate prima dell'invio (orfani, §3.21 punto 1): la coda vale anche lì. */
+    @Test
+    fun `SE-56 righe S stantie con il PAN tagliato`() = runTest {
+        val h = harness()
+        h.transport.onConnect(bytes(0, app(cutFirst), app(cutSecond)))
+        h.transport.onApplicationFrame(bytes(0, Frames.ACKW, app(Frames.E22)))
+
+        success(h.run())
+
+        h.assertWarning(WarningCode.STALE_BYTES)
+        val stale = h.wireRx.filter { it.code == 'S' }.map { it.text() }
+        assertEquals(2, stale.size)
+        assertTrue("CARTA ********\u0003" in stale[0] && "****1111 FINE" in stale[1], stale.toString())
+        h.assertNoPanHalves()
+    }
+
+    // Dalla revisione del 2026-10-19: casi in cui la coda vera non era quella tenuta dalla sessione.
+
+    /** Seconda riga con 12 cifre in testa: senza la coda della prima, 12 cifre oltre le ultime 4 in chiaro. */
+    private val shortCutFirst = "025757330S" + "X".repeat(190) + "CARTA 4111"
+    private val longHead = "025757330S111111111111 TESTO"
+
+    /**
+     * Il terminale manda di nuovo una riga S già ACKata (il nostro ACK non gli è arrivato, o è arrivato tardi). Prima la
+     * copia prendeva la coda lasciata dall'originale (0) e mostrava `111111111111` in Wire RX, riga e trace; ora una
+     * copia identica continua la stessa riga dell'originale.
+     */
+    @Test
+    fun `SE-57 riga S ripetuta dopo l'ACK, la copia resta mascherata`() = runTest {
+        val h = harness(options = Frames.fast.copy(ecrPrinting = true))
+        h.transport.onApplicationFrame(
+            bytes(0, Frames.ACKW, app(Frames.E22)),
+            bytes(30, app(shortCutFirst), app(longHead), app(longHead), app("025757330SFINE}}\u001B")),
+        )
+
+        success(h.run())
+
+        val heads = h.wireRx.filter { it.code == 'S' }.map { it.text() }.filter { "TESTO" in it }
+        assertEquals(2, heads.size)
+        heads.forEach { assertTrue("********1111 TESTO" in it, it) }
+        assertEquals(listOf("********1111 TESTO", "********1111 TESTO"), h.trace.build(0).receipt.map { it.text }.filter { "TESTO" in it })
+        assertFalse(h.wireRx.any { "11111111" in it.text() }, "testa in chiaro in un Wire RX")
+    }
+
+    /** La copia rimasta nel buffer quando lo scontrino è già chiuso esce come residuo: coda sconosciuta, testa mascherata. */
+    @Test
+    fun `SE-58 copia di una riga S nel residuo`() = runTest {
+        val h = harness(options = Frames.fast.copy(ecrPrinting = true))
+        val last = "025757330S111111111111 FINE}}\u001B"
+        h.transport.onApplicationFrame(bytes(0, Frames.ACKW, app(Frames.E22)), bytes(30, app(shortCutFirst), app(last), app(last)))
+
+        success(h.run())
+
+        val residue = h.discarded.map { String(it.bytes, Charsets.ISO_8859_1) }.single { "FINE" in it }
+        assertTrue("********1111 FINE" in residue, residue)
+    }
+
+    /**
+     * Connessione riusata (PERSISTENT): le righe S rimaste a metà del comando precedente arrivano come orfani, e la coda
+     * di quel comando non si conosce. La testa della prima riga S mostra solo le ultime 4 cifre.
+     */
+    @Test
+    fun `SE-59 connessione riusata, coda sconosciuta`() = runTest {
+        val h = harness()
+        h.transport.onConnect(bytes(0, app(longHead)))
+        h.transport.onApplicationFrame(bytes(0, Frames.ACKW, app(Frames.E22)))
+
+        success(h.run(h.spec(fresh = false)))
+
+        val stale = h.wireRx.single { it.code == 'S' }.text()
+        assertTrue("********1111 TESTO" in stale, stale)
+    }
+
+    /** Byte scartati prima di una riga S: il pezzo perso può essere l'inizio del PAN, la testa dopo è mascherata. */
+    @Test
+    fun `SE-60 riga S dopo byte scartati`() = runTest {
+        val h = harness(options = Frames.fast.copy(ecrPrinting = true))
+        h.transport.onApplicationFrame(bytes(0, Frames.ACKW, app(Frames.E22)), bytes(30, raw(0xFF), app(cutSecond)))
+
+        success(h.run())
+
+        assertTrue(h.discarded.any { it.reason == DiscardReason.NOISE }, "byte scartato prima della riga")
+        assertEquals("****1111 FINE", h.trace.build(0).receipt.single().text)
     }
 
     /** §5.5: la cancellazione della coroutine nel drain si propaga; RESULT_RECEIVED (con resultRaw) è già stata notificata. */

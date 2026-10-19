@@ -353,17 +353,20 @@ object ResponseParser {
      * colonne senza separatori lo 0x7F è un byte in più sul bordo di una colonna. Prima anche lo 0x7E veniva solo tolto,
      * e "MCCHIP" e "PAGAMENTO" finivano sulla stessa riga di 48 caratteri.
      *
-     * maskPan = true: PanMasker.maskDigitRuns sul grezzo e sul corpo PRIMA della conversione (alcuni terminali stampano
-     * il PAN in chiaro, i terminali Ingenico con il BIN visibile). maskDigitRuns tratta lo 0x7F come trasparente e lo
-     * 0x7E, come lo 0x7D, come separatore di riga: mascherando prima della conversione grezzo, corpo e testo contano le
-     * stesse sequenze, e un PAN spezzato da uno 0x7F è mascherato come una sola sequenza anche nel testo (M9).
+     * maskPan = true: PanMasker.maskReceiptPayload sul payload intero PRIMA della conversione (alcuni terminali
+     * stampano il PAN in chiaro, i terminali Ingenico con il BIN visibile), e grezzo, corpo e testo derivano da quel
+     * payload mascherato: contano le stesse sequenze e coincidono con l'evento Wire RX della riga (M9). La rete di
+     * sicurezza tratta lo 0x7F come trasparente e lo 0x7E, come lo 0x7D, come separatore di riga: un PAN spezzato da uno
+     * 0x7F è mascherato come una sola sequenza anche nel testo. [carry] è la coda lasciata aperta dalla riga S
+     * precedente (PanMasker.receiptCarryAfter, tenuta dalla sessione): la testa di questa riga la continua, così un PAN
+     * tagliato tra due righe non resta in chiaro. Prima si mascheravano grezzo e corpo separatamente, una riga alla volta.
      */
-    fun parseReceiptLine(payload: ByteArray, maskPan: Boolean = true): ReceiptLine {
-        val raw = FieldReader(payload).restFrom(11)
+    fun parseReceiptLine(payload: ByteArray, maskPan: Boolean = true, carry: Int = 0): ReceiptLine {
+        val source = if (maskPan) PanMasker.maskReceiptPayload(payload, carry) else payload
+        val raw = FieldReader(source).restFrom(11)
         val newline = ControlChars.RECEIPT_NEWLINE.toChar()
         val isEnd = raw.endsWith(ControlChars.ESC.toChar())
-        val trimmed = if (isEnd) raw.dropLast(1).trimEnd { it == newline || it == ' ' } else raw
-        val body = if (maskPan) PanMasker.maskDigitRuns(trimmed) else trimmed
+        val body = if (isEnd) raw.dropLast(1).trimEnd { it == newline || it == ' ' } else raw
         val text = buildString(body.length) {
             for (c in body) {
                 when (c.code) {
@@ -374,7 +377,7 @@ object ResponseParser {
             }
         }
         return ReceiptLine(
-            raw = if (maskPan) PanMasker.maskDigitRuns(raw) else raw,
+            raw = raw,
             text = text,
             doubleHeight = body.any { it.code == ControlChars.RECEIPT_DOUBLE || it.code == ControlChars.RECEIPT_DOUBLE_ALT },
             isEnd = isEnd,
