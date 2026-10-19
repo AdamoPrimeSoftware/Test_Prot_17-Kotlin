@@ -103,8 +103,9 @@ data class ConsoleUiState(
     val canRecoverWithG: Boolean get() = !busy && !linkBusy && unresolved.isNotEmpty() && connection.configUsable
 
     /**
-     * Azioni della barra (Stato, Test connessione, Connetti/Disconnetti) e del menu Strumenti: disabilitate durante
-     * un comando e durante un'operazione di collegamento.
+     * Azioni della barra (Stato, Test connessione, Connetti/Disconnetti): disabilitate durante un comando e durante
+     * un'operazione di collegamento. Il menu Strumenti non legge questo valore: MainWindow sta sopra il Navigator, non
+     * vede il ConsoleViewModel e abilita le sue voci solo con il runner inattivo (§6.15).
      */
     val barActionsEnabled: Boolean get() = !busy && !linkBusy
 

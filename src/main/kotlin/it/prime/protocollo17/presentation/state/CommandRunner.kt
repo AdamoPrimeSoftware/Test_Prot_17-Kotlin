@@ -10,8 +10,25 @@ import it.prime.protocollo17.ecr17.model.ReceiptLine
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** Da quale finestra è partito il comando: il dialog di risoluzione dopo G si apre solo nella finestra d'origine. */
-enum class RunOrigin { CONSOLE, JOURNAL }
+/**
+ * Da dove è partito il comando: il dialog di risoluzione dopo G si apre solo nella finestra d'origine, e lo Stato
+ * (F5) della barra ha un'origine sua perché il suo esito ha un avviso diverso da quello degli altri comandi.
+ *
+ * Prima il ping partiva come [CONSOLE]: la Console mostrava "Terminale: operativo (2) in 140 ms" e il servizio
+ * pubblicava anche il suo "Stato terminale: risposta ricevuta" sullo stesso snackbar, e l'uno sostituiva l'altro in
+ * ordine non deterministico. Ora con [CONSOLE_PING] il servizio non pubblica l'avviso dell'esito e la Console
+ * riconosce il ping dall'origine.
+ */
+enum class RunOrigin {
+    /** Comando della finestra principale: form dei comandi o G di recupero. */
+    CONSOLE,
+
+    /** Stato (F5) della barra: l'avviso dell'esito lo mostra la Console (§6.5), il servizio solo un errore del journal. */
+    CONSOLE_PING,
+
+    /** G lanciato dalla finestra Journal. */
+    JOURNAL,
+}
 
 /** Comando in corso, come lo mostra l'overlay di occupato (§6.9). */
 data class RunningCommand(

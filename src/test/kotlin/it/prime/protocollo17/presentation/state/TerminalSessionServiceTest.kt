@@ -10,8 +10,10 @@ import it.prime.protocollo17.domain.model.settings.ProtocolSettings
 import it.prime.protocollo17.domain.repository.JournalRepository
 import it.prime.protocollo17.domain.repository.PosTerminalRepository
 import it.prime.protocollo17.domain.util.ConfigResolver
+import it.prime.protocollo17.domain.util.PaymentBlockPolicy
 import it.prime.protocollo17.ecr17.error.Ecr17Failure
 import it.prime.protocollo17.ecr17.model.CardVerificationRequest
+import it.prime.protocollo17.ecr17.model.CloseSessionRequest
 import it.prime.protocollo17.ecr17.model.CommandCode
 import it.prime.protocollo17.ecr17.model.CommandOutcome
 import it.prime.protocollo17.ecr17.model.ConnectionTestResult
@@ -23,6 +25,8 @@ import it.prime.protocollo17.ecr17.model.PaymentRequest
 import it.prime.protocollo17.ecr17.model.PhaseChange
 import it.prime.protocollo17.ecr17.model.PreAuthRequest
 import it.prime.protocollo17.ecr17.model.StatusRequest
+import it.prime.protocollo17.ecr17.model.TotalsRequest
+import it.prime.protocollo17.presentation.UiFixtures
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -247,7 +251,10 @@ class TerminalSessionServiceTest {
         assertTrue(outcome is CommandOutcome.Unknown, "Unknown: $outcome")
         assertNull(outcome.trace, "trace sintetizzata nulla")
         assertEquals("att-1", finishedRuns.single().attemptId, "attemptId")
-        assertTrue(notices.any { it.kind == AppNotifications.Kind.ERROR && it.source == "Esito sconosciuto" }, "notifica: $notices")
+        assertTrue(
+            notices.any { it.kind == AppNotifications.Kind.ERROR && it.message.startsWith("Pagamento 0,10 €: esito sconosciuto") },
+            "notifica: $notices",
+        )
     }
 
     // ─── Fine comando e notifiche ──────────────────────────────────────────────
@@ -268,8 +275,10 @@ class TerminalSessionServiceTest {
         assertEquals(AppNotifications.Kind.SUCCESS, notice.kind, "successo")
         assertEquals("Pagamento", notice.source, "titolo da CommandTitles")
         assertEquals("Pagamento 0,10 €: APPROVATO", notice.message, "importo da formatCents")
+        assertEquals("Pagamento 0,10 €: APPROVATO", notice.displayText, "titolo non ripetuto sullo snackbar")
     }
 
+    /** Prima la fonte era "Esito sconosciuto" e lo snackbar ripeteva le stesse parole due volte. */
     @Test
     fun `esito sconosciuto notifica errore con apertura del Journal`() {
         repo.outcomeFor = { OutcomeFixtures.unknown(it.command) }
@@ -279,9 +288,68 @@ class TerminalSessionServiceTest {
 
         val notice = notices.single()
         assertEquals(AppNotifications.Kind.ERROR, notice.kind, "errore")
-        assertEquals("Esito sconosciuto", notice.source, "fonte")
-        assertTrue(notice.message.contains("pagamenti bloccati") && notice.message.contains("Ultimo esito (G)"), "testo: ${notice.message}")
+        assertEquals("Pagamento", notice.source, "fonte = titolo del comando")
+        assertEquals(
+            "Pagamento 0,10 €: esito sconosciuto, pagamenti bloccati: esegui Ultimo esito (G)",
+            notice.displayText,
+            "testo sullo snackbar",
+        )
         assertEquals(AppWindowId.JOURNAL, notice.openWindow, "apre il Journal")
+    }
+
+    /** Prima diceva "pagamenti bloccati", ma un H sconosciuto blocca solo la famiglia E V (PaymentBlockPolicy). */
+    @Test
+    fun `esito sconosciuto di H elenca i comandi bloccati da PaymentBlockPolicy`() {
+        repo.outcomeFor = { OutcomeFixtures.unknown(it.command) }
+        service.run(CardVerificationRequest(), RunOrigin.CONSOLE)
+        repo.gate.complete(Unit)
+        awaitIdle()
+
+        assertEquals(
+            "Verifica carta: esito sconosciuto, bloccati P, X, S e H: esegui Ultimo esito (G)",
+            notices.single().displayText,
+            "testo sullo snackbar",
+        )
+        val blocked = PaymentBlockPolicy.blockedCommands(journal.unresolved.value)
+        assertEquals(
+            setOf(CommandCode.PAYMENT, CommandCode.PAYMENT_EXTENDED, CommandCode.REVERSAL, CommandCode.CARD_VERIFICATION),
+            blocked,
+            "il testo dice esattamente ciò che la policy blocca",
+        )
+    }
+
+    @Test
+    fun `esito sconosciuto di C dice che si blocca solo la chiusura contabile`() {
+        repo.outcomeFor = { OutcomeFixtures.unknown(it.command) }
+        service.run(CloseSessionRequest(), RunOrigin.CONSOLE)
+        repo.gate.complete(Unit)
+        awaitIdle()
+
+        assertEquals(
+            "Chiusura contabile: esito sconosciuto, nuova chiusura contabile bloccata: verifica con Ultimo esito (G) o Totali",
+            notices.single().displayText,
+            "testo sullo snackbar",
+        )
+        assertEquals(setOf(CommandCode.CLOSE_SESSION), PaymentBlockPolicy.blockedCommands(journal.unresolved.value), "solo C")
+    }
+
+    /** Prima l'avviso diceva "APPROVATO" mentre il pannello dell'esito (ResultViewMapper) diceva "OK". */
+    @Test
+    fun `Totali e Chiusura contabile approvati notificano OK come il pannello`() {
+        repo.exchange = { _, _ -> }
+        repo.outcomeFor = { request ->
+            when (request.command) {
+                CommandCode.TOTALS -> UiFixtures.answered(CommandCode.TOTALS, UiFixtures.totals())
+                else -> UiFixtures.answered(CommandCode.CLOSE_SESSION, UiFixtures.closeSession())
+            }
+        }
+        assertEquals(RunStart.Started, service.run(TotalsRequest(), RunOrigin.CONSOLE), "T")
+        awaitIdle()
+        assertEquals(RunStart.Started, service.run(CloseSessionRequest(), RunOrigin.CONSOLE), "C")
+        awaitIdle()
+
+        assertEquals(listOf("Totali: OK", "Chiusura contabile: OK"), notices.map { it.displayText }, "parola del pannello")
+        assertTrue(notices.all { it.kind == AppNotifications.Kind.SUCCESS }, "successo: $notices")
     }
 
     @Test
@@ -309,6 +377,53 @@ class TerminalSessionServiceTest {
         assertEquals(AppNotifications.Kind.ERROR, journalNotice.kind, "errore")
         assertTrue(journalNotice.message.startsWith("Journal non scritto: pagamenti bloccati"), "testo: ${journalNotice.message}")
         assertTrue(notices.any { it.kind == AppNotifications.Kind.SUCCESS }, "l'esito vero resta notificato")
+    }
+
+    /**
+     * Prima lo Stato (F5) usciva con l'avviso del servizio e con quello della Console sullo stesso snackbar, in ordine
+     * non deterministico. Ora per CONSOLE_PING il servizio tace sull'esito ma l'errore del journal resta: è l'avviso
+     * pubblicato subito dopo quello (mancante) dell'esito, quindi la verifica non dipende dai tempi.
+     */
+    @Test
+    fun `ping dalla barra non notifica l'esito ma resta l'avviso del journal`() {
+        repo.exchange = { _, _ -> }
+        repo.outcomeFor = { UiFixtures.answered(CommandCode.STATUS, UiFixtures.status(2)) }
+        repo.journalError = "journal non scritto: disco pieno"
+
+        assertEquals(RunStart.Started, service.run(StatusRequest, RunOrigin.CONSOLE_PING), "avvio")
+        awaitTrue("avviso del journal") { notices.any { it.source == "Journal" } }
+
+        assertEquals(listOf("Journal"), notices.map { it.source }, "nessun avviso dell'esito: $notices")
+        val run = finishedRuns.single()
+        assertEquals(RunOrigin.CONSOLE_PING, run.origin, "origine")
+        assertEquals(listOf(run), service.state.value.history, "il ping resta in cronologia")
+        assertEquals("02575733", service.state.value.lastSeenTerminalId, "TID visto")
+    }
+
+    /** L'eccezione del ping vale solo per `s`: un altro comando con origine CONSOLE_PING non perde il suo avviso. */
+    @Test
+    fun `CONSOLE_PING su un comando diverso da s notifica l'esito`() {
+        repo.exchange = { _, _ -> }
+        repo.outcomeFor = { UiFixtures.answered(CommandCode.TOTALS, UiFixtures.totals()) }
+
+        service.run(TotalsRequest(), RunOrigin.CONSOLE_PING)
+        awaitTrue("avviso") { notices.isNotEmpty() }
+
+        assertEquals("Totali: OK", notices.single().displayText, "avviso dell'esito")
+    }
+
+    /** Lo stesso `s` lanciato dal form (CONSOLE) ha l'avviso del servizio, con il testo di sempre. */
+    @Test
+    fun `s dalla Console notifica risposta ricevuta`() {
+        repo.exchange = { _, _ -> }
+        repo.outcomeFor = { UiFixtures.answered(CommandCode.STATUS, UiFixtures.status(2)) }
+
+        service.run(StatusRequest, RunOrigin.CONSOLE)
+        awaitTrue("avviso") { notices.isNotEmpty() }
+
+        val notice = notices.single()
+        assertEquals(AppNotifications.Kind.SUCCESS, notice.kind, "successo")
+        assertEquals("Stato terminale: risposta ricevuta", notice.displayText, "testo sullo snackbar")
     }
 
     @Test

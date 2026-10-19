@@ -31,4 +31,12 @@ object CommandTitles {
      * La chiusura contabile non muove denaro ma non è ripetibile e azzera i totali: merita lo stesso avviso visivo.
      */
     fun isDanger(code: CommandCode): Boolean = code.movesMoney || code == CommandCode.CLOSE_SESSION
+
+    /**
+     * Parola dell'esito positivo: "OK" per Totali e Chiusura contabile, che non approvano una transazione,
+     * "APPROVATO" per gli altri. La usano il pannello dell'esito e gli avvisi: prima ognuno aveva la sua regola, e
+     * l'avviso di T diceva "APPROVATO" mentre il pannello diceva "OK".
+     */
+    fun approvedWord(code: CommandCode): String =
+        if (code == CommandCode.TOTALS || code == CommandCode.CLOSE_SESSION) "OK" else "APPROVATO"
 }

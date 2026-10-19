@@ -14,7 +14,8 @@ import it.prime.protocollo17.presentation.theme.PreviewTheme
 /**
  * Campo numerico delle Opzioni e del Simulatore. Mostra il testo così come lo scrive l'operatore, anche se non è
  * valido: l'errore resta accanto al testo sbagliato (§6.11) invece di far "rimbalzare" il valore al precedente,
- * che su desktop sembra un campo che non accetta l'input.
+ * che su desktop sembra un campo che non accetta l'input. [enabled] = false per la porta del Simulatore durante un
+ * comando (§6.14).
  */
 @Composable
 fun NumberTextField(
@@ -25,10 +26,12 @@ fun NumberTextField(
     suffix: String? = "ms",
     error: String? = null,
     hint: String? = null,
+    enabled: Boolean = true,
 ) {
     OutlinedTextField(
         value = text,
         onValueChange = onTextChange,
+        enabled = enabled,
         singleLine = true,
         label = { Text(label) },
         suffix = suffix?.let { { Text(it) } },
@@ -47,6 +50,7 @@ private fun NumberTextFieldPreview() {
             NumberTextField(label = "Timeout ACK", text = "2000", onTextChange = {}, hint = "Default 2000")
             NumberTextField(label = "Timeout ACK", text = "abc", onTextChange = {}, error = "Timeout ACK: valore tra 100 e 30000 ms")
             NumberTextField(label = "Reinvii su NAK", text = "3", onTextChange = {}, suffix = null)
+            NumberTextField(label = "Porta", text = "15577", onTextChange = {}, suffix = null, hint = "Disabilitato", enabled = false)
         }
     }
 }

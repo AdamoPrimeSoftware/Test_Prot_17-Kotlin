@@ -17,6 +17,12 @@ data class SimulatorUiState(
     val isTarget: Boolean = false,
     val texts: Map<String, String> = emptyMap(),     // campi numerici in modifica: "port", "ackDelayMs", "progressDelayMs", "resultDelayMs"
     val fieldErrors: Map<String, String> = emptyMap(),
+    /**
+     * Un comando è in corso (CommandRunner): Avvia/Ferma, porta, "Usa come terminale", "Ripristina terminale" e
+     * "Azzera stato" sono disabilitati, come le voci del menu Strumenti. Guasti, decisione e ritardi no: valgono
+     * dalla richiesta successiva e sono lo scopo della finestra.
+     */
+    val commandRunning: Boolean = false,
 ) {
     val running: Boolean get() = status is SimulatorStatus.Running
     val starting: Boolean get() = status is SimulatorStatus.Starting

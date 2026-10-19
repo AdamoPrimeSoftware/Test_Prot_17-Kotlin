@@ -16,7 +16,7 @@ enum class SimDecision { APPROVE, DECLINE, CARD_NOT_PRESENT }
 enum class SimFault {
     NONE,
     NO_ACK,                          // non invia l'ACK della richiesta, ma elabora ed invia l'esito
-    PROGRESS_NO_ACK,                 // nessun ACK, ma progress dopo progressDelayMs ed esito regolare
+    PROGRESS_NO_ACK,                 // nessun ACK, progress a min(progressDelayMs, ritardo dell'esito) ed esito regolare
     SILENT,                          // né ACK né esito
     NAK_ONCE,                        // NAK al primo invio, ACK alla ritrasmissione
     NAK_ALWAYS,                      // NAK a ogni invio

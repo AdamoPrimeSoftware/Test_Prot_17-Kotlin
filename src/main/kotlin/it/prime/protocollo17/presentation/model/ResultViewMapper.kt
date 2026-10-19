@@ -98,7 +98,7 @@ object ResultViewMapper {
         val reviewSuffix = if (review) " — DA VERIFICARE" else ""
         return when (hasResult.verdict) {
             Verdict.APPROVED -> {
-                val word = if (outcome.command == CommandCode.TOTALS || outcome.command == CommandCode.CLOSE_SESSION) "OK" else "APPROVATO"
+                val word = CommandTitles.approvedWord(outcome.command)
                 Summary(if (review) ResultTone.WARNING else ResultTone.SUCCESS, word + reviewSuffix, null)
             }
             Verdict.DECLINED -> Summary(if (review) ResultTone.WARNING else ResultTone.DANGER, "RIFIUTATO$reviewSuffix", errorDescription(hasResult))

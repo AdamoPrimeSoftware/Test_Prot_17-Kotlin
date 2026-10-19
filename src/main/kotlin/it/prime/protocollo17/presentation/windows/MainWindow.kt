@@ -34,13 +34,13 @@ import cafe.adriel.voyager.navigator.CurrentScreen
 import cafe.adriel.voyager.navigator.Navigator
 import it.prime.protocollo17.data.local.AppDirs
 import it.prime.protocollo17.domain.model.journal.JournalEntry
-import it.prime.protocollo17.domain.model.journal.JournalPhase
 import it.prime.protocollo17.domain.model.simulator.SimulatorFailure
 import it.prime.protocollo17.domain.model.simulator.SimulatorStatus
 import it.prime.protocollo17.domain.repository.SimulatorController
 import it.prime.protocollo17.presentation.components.NoticePresenter
 import it.prime.protocollo17.presentation.components.NoticeTone
 import it.prime.protocollo17.presentation.components.rememberNoticePresenter
+import it.prime.protocollo17.presentation.model.AttemptTexts
 import it.prime.protocollo17.presentation.screen.main.MainScreen
 import it.prime.protocollo17.presentation.state.AppNotifications
 import it.prime.protocollo17.presentation.state.AppWindowId
@@ -180,7 +180,8 @@ fun MainWindow(onBeforeExit: () -> Unit, startupRecovered: List<JournalEntry>, o
  *
  * Il collect parte UNDISPATCHED: AppNotifications non ha replay, e un avviso emesso prima dell'iscrizione andrebbe
  * perso. Ogni avviso passa dal NoticePresenter della finestra, lo stesso degli eventi della Console: SOSTITUISCE
- * quello visibile invece di accodarsi (§6.18).
+ * quello visibile invece di accodarsi (§6.18). Il testo è Notice.displayText: la fonte davanti al messaggio solo
+ * se il messaggio non comincia già con essa (prima "Pagamento: Pagamento 1,00 €: APPROVATO").
  */
 @Composable
 private fun NotificationsEffect(
@@ -201,21 +202,15 @@ private fun NotificationsEffect(
                 }
                 notices.show(
                     tone = tone,
-                    message = "${notice.source}: ${notice.message}",
+                    message = notice.displayText,
                     actionLabel = notice.openWindow?.let { "Apri" },
                     onAction = { notice.openWindow?.let(windows::open) },
                 )
             }
         }
         // G mai automatico (U7): all'avvio solo l'avviso; il banner della Console mostra i tentativi.
-        val interrupted = startupRecovered.count { it.phase == JournalPhase.UNKNOWN }
-        if (interrupted > 0) {
-            notifications.error(
-                "Journal",
-                "All'ultimo avvio $interrupted ${if (interrupted == 1) "operazione è rimasta" else "operazioni sono rimaste"} senza esito: " +
-                    "pagamenti bloccati finché non le risolvi",
-                openWindow = AppWindowId.JOURNAL,
-            )
+        AttemptTexts.startupRecoveryText(startupRecovered)?.let { text ->
+            notifications.error("Journal", text, openWindow = AppWindowId.JOURNAL)
         }
         var wasFailed = false
         simulator.status.collect { status ->

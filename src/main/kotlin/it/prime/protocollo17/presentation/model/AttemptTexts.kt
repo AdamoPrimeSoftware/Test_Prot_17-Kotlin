@@ -4,8 +4,10 @@ import it.prime.protocollo17.domain.model.command.CommandTitles
 import it.prime.protocollo17.domain.model.journal.JournalEntry
 import it.prime.protocollo17.domain.model.journal.JournalPhase
 import it.prime.protocollo17.domain.model.journal.ResolutionKind
+import it.prime.protocollo17.domain.util.PaymentBlockPolicy
 import it.prime.protocollo17.domain.util.formatCents
 import it.prime.protocollo17.ecr17.model.CloseCause
+import it.prime.protocollo17.ecr17.model.CommandCode
 import it.prime.protocollo17.presentation.util.FailureMessages
 import it.prime.protocollo17.presentation.util.formatSeconds
 
@@ -120,6 +122,34 @@ object AttemptTexts {
         JournalPhase.UNKNOWN -> "esito sconosciuto"
         JournalPhase.RESOLVED -> "risolto"
     }
+
+    /**
+     * Avviso all'avvio per i tentativi che la sessione precedente ha lasciato in volo (§6.18), null se non ce ne
+     * sono. Il blocco segue PaymentBlockPolicy: "pagamenti bloccati" solo se un tentativo muove denaro (o ha dati
+     * incompleti); altrimenti i comandi bloccati per famiglia (un H blocca P X S H, una C solo un'altra C).
+     *
+     * Prima diceva sempre "pagamenti bloccati", anche per una sola C rimasta senza esito, mentre i pagamenti
+     * restavano ammessi.
+     */
+    fun startupRecoveryText(recovered: List<JournalEntry>): String? {
+        val interrupted = recovered.filter { it.phase == JournalPhase.UNKNOWN }
+        if (interrupted.isEmpty()) return null
+        val blocked = PaymentBlockPolicy.blockedCommands(interrupted)
+        val block = when {
+            interrupted.any { it.blocksPayments } -> "pagamenti bloccati"
+            blocked == setOf(CommandCode.CLOSE_SESSION) -> "nuova chiusura contabile bloccata"
+            else -> "bloccati " + joinItalian(blocked.map { it.wire.toString() })
+        }
+        return if (interrupted.size == 1) {
+            "All'ultimo avvio 1 operazione è rimasta senza esito: $block finché non la risolvi"
+        } else {
+            "All'ultimo avvio ${interrupted.size} operazioni sono rimaste senza esito: $block finché non le risolvi"
+        }
+    }
+
+    /** "P, X, S e H". */
+    private fun joinItalian(items: List<String>): String =
+        if (items.size <= 1) items.joinToString() else items.dropLast(1).joinToString(", ") + " e " + items.last()
 
     /** Payload ricevuti o arrivati in ritardo allegati al tentativo (prove per il dialog §6.8). */
     fun evidence(entry: JournalEntry): List<String> = entry.records

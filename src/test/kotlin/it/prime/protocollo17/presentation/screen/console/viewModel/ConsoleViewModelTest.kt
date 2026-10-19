@@ -31,6 +31,7 @@ import it.prime.protocollo17.presentation.FakeCommandRunner
 import it.prime.protocollo17.presentation.FakeSettings
 import it.prime.protocollo17.presentation.UiFixtures
 import it.prime.protocollo17.presentation.popStandaloneScreenModels
+import it.prime.protocollo17.presentation.state.RunOrigin
 import it.prime.protocollo17.presentation.state.RunnerState
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -362,7 +363,7 @@ class ConsoleViewModelTest {
         val vm = vm()
         vm.events.test {
             vm.onAction(ConsoleAction.PingStatus)
-            assertEquals(StatusRequest, runner.runs.single().first)
+            assertEquals(StatusRequest to RunOrigin.CONSOLE_PING, runner.runs.single(), "origine propria del ping")
             assertEquals(CommandCode.PAYMENT, vm.uiState.value.selected, "F5 non cambia selezione")
             runner.finish(UiFixtures.answered(CommandCode.STATUS, UiFixtures.status(2)), finishedAt = 1_140)
             assertEquals(ConsoleEvent.ShowInfo("Terminale: operativo (2) in 140 ms"), awaitItem())
@@ -370,6 +371,91 @@ class ConsoleViewModelTest {
         vm.onAction(ConsoleAction.RunSelected)
         vm.onAction(ConsoleAction.PingStatus)
         assertEquals(2, runner.runs.size, "F5 durante un comando non parte")
+    }
+
+    /** Ping senza risposta: un solo avviso, di errore, dalla Console (il servizio non pubblica il suo). */
+    @Test
+    fun `PingStatus fallito mostra l'errore come evento`() = runTest {
+        val vm = vm()
+        vm.events.test {
+            vm.onAction(ConsoleAction.PingStatus)
+            runner.finish(
+                CommandOutcome.Failed(
+                    CommandCode.STATUS, Ecr17Failure.ResponseTimeout(120_000),
+                    ExchangePhase.AWAITING_RESULT, UiFixtures.trace(CommandCode.STATUS),
+                ),
+            )
+            val event = awaitItem()
+            assertTrue(event is ConsoleEvent.ShowError && event.message.startsWith("Stato terminale: "), "errore: $event")
+            expectNoEvents()
+        }
+    }
+
+    /**
+     * Journal non scritto durante il ping (prova orfana allegata a un tentativo): l'errore del servizio resta sullo
+     * snackbar, la Console non lo sostituisce con l'avviso informativo.
+     */
+    @Test
+    fun `PingStatus con journal non scritto non pubblica il suo avviso`() = runTest {
+        val vm = vm()
+        vm.events.test {
+            vm.onAction(ConsoleAction.PingStatus)
+            runner.finish(UiFixtures.answered(CommandCode.STATUS, UiFixtures.status(2)), journalError = "disco pieno")
+            expectNoEvents()
+        }
+    }
+
+    /**
+     * Il ping lascia il pannello com'è (scheda e voce di cronologia guardata) ma finisce in cronologia e aggiorna il
+     * TID visto, come gli altri comandi.
+     */
+    @Test
+    fun `PingStatus non cambia il pannello ma resta in cronologia`() {
+        val old = UiFixtures.finished(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment()), id = 1)
+        runner.setState(RunnerState(history = listOf(old), lastByCommand = mapOf(CommandCode.PAYMENT to old)))
+        val vm = vm()
+        vm.onAction(ConsoleAction.ShowHistoryItem(1))
+        vm.onAction(ConsoleAction.SetResultTab(ResultTab.HISTORY))
+
+        vm.onAction(ConsoleAction.PingStatus)
+        val ping = runner.finish(UiFixtures.answered(CommandCode.STATUS, UiFixtures.status(2)))
+
+        val state = vm.uiState.value
+        assertEquals(ResultTab.HISTORY, state.resultTab, "scheda invariata")
+        assertNotNull(state.viewedHistory, "voce di cronologia ancora in vista")
+        assertEquals(listOf(ping.id, old.id), state.history.map { it.id }, "il ping è in cronologia")
+        assertNotNull(state.results[CommandCode.STATUS], "ultimo esito di s")
+        assertEquals("02575733", state.connection.lastSeenTerminalId, "TID visto dal ping")
+    }
+
+    /** Uno `s` lanciato dal form è un comando come gli altri: niente avviso del ping, l'avviso è del servizio. */
+    @Test
+    fun `s dal form non produce l'evento del ping`() = runTest {
+        val vm = vm()
+        vm.onAction(ConsoleAction.Select(CommandCode.STATUS))
+        vm.events.test {
+            vm.onAction(ConsoleAction.RunSelected)
+            assertEquals(StatusRequest to RunOrigin.CONSOLE, runner.runs.single(), "origine Console")
+            runner.finish(UiFixtures.answered(CommandCode.STATUS, UiFixtures.status(2)))
+            expectNoEvents()
+        }
+        assertEquals(ResultTab.RESULT, vm.uiState.value.resultTab)
+    }
+
+    /** Il dialog di risoluzione della Console si apre solo per un suo G: né il G del Journal né il ping lo aprono. */
+    @Test
+    fun `G del Journal e ping non aprono il dialog della Console`() = runTest {
+        unresolvedFlow.value = listOf(UiFixtures.entry(attemptId = "attempt-1", command = CommandCode.PAYMENT))
+        val vm = vm()
+        runner.run(LastResultRequest(), RunOrigin.JOURNAL)
+        runner.finish(UiFixtures.answered(CommandCode.LAST_RESULT, UiFixtures.payment()))
+        assertNull(vm.uiState.value.dialog, "il G del Journal apre il dialog nel Journal")
+        vm.events.test {
+            vm.onAction(ConsoleAction.PingStatus)
+            runner.finish(UiFixtures.answered(CommandCode.STATUS, UiFixtures.status(2)))
+            assertTrue(awaitItem() is ConsoleEvent.ShowInfo, "avviso del ping")
+        }
+        assertNull(vm.uiState.value.dialog)
     }
 
     // ─── G e risoluzione ──────────────────────────────────────────────────────────

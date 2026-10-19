@@ -46,7 +46,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * App-scoped: i comandi sopravvivono alla chiusura delle finestre secondarie. Nessun import Compose.
  *
  * Applica la seconda difesa del blocco pagamenti (PaymentBlockPolicy, oltre al pulsante disabilitato), rifiuta
- * un secondo comando invece di accodarlo (M7) e pubblica le notifiche di fine comando per tutta l'app.
+ * un secondo comando invece di accodarlo (M7) e pubblica le notifiche di fine comando per tutta l'app (tranne
+ * l'esito dello Stato F5, [RunOrigin.CONSOLE_PING], che la Console mostra da sé).
  *
  * Ogni comando termina con esattamente un [FinishedRun], anche quando il flusso del repository si interrompe
  * senza `Finished` (annullamento o bug): l'esito si sintetizza dal journal, che il `finally` del repository ha
@@ -276,45 +277,66 @@ class TerminalSessionService(
             }
             run
         }
-        if (!_finished.tryEmit(run)) log.warn("Esito di '{}' non consegnato agli osservatori (buffer pieno)", run.command.wire)
-        notifyFinished(run)
+        val delivered = _finished.tryEmit(run)
+        if (!delivered) log.warn("Esito di '{}' non consegnato agli osservatori (buffer pieno)", run.command.wire)
+        notifyFinished(run, delivered)
     }
 
     // ─── Notifiche ─────────────────────────────────────────────────────────────
 
-    private fun notifyFinished(run: FinishedRun) {
-        val title = CommandTitles.title(run.command)
-        val head = title + (run.request.amountCents?.let { " " + formatCents(it) } ?: "")
-        when (val outcome = run.outcome) {
-            is CommandOutcome.Answered -> notifyAnswered(title, head, outcome)
-            is CommandOutcome.Acknowledged -> notifications.success(title, "$head: confermato dal terminale")
-            is CommandOutcome.Unknown -> notifications.error("Esito sconosciuto", "$head: ${unknownText(run.command)}", openWindow = AppWindowId.JOURNAL)
-            is CommandOutcome.NotSent, is CommandOutcome.Refused, is CommandOutcome.Failed ->
-                notifications.error(title, "$head: ${FailureMessages.forOutcome(outcome) ?: "comando non riuscito"}")
-        }
+    /**
+     * Un avviso per comando concluso, con fonte = titolo del comando e messaggio che comincia con lo stesso titolo
+     * (più l'importo): lo snackbar mostra [AppNotifications.Notice.displayText], cioè il solo messaggio.
+     *
+     * Prima l'esito sconosciuto aveva fonte "Esito sconosciuto" e si leggeva "Esito sconosciuto: Pagamento 0,10 €:
+     * esito sconosciuto, …"; ora ha la fonte del comando come gli altri rami.
+     *
+     * Lo Stato (F5) della barra ([RunOrigin.CONSOLE_PING] con `s`) non ha l'avviso dell'esito: lo pubblica la
+     * Console ("Terminale: operativo (2) in 140 ms"). Prima uscivano entrambi sullo stesso snackbar e l'uno
+     * sostituiva l'altro in ordine non deterministico. L'eccezione vale solo per `s` e solo se [finished] ha
+     * consegnato l'esito ([delivered]): altrimenti la Console non lo vede e l'avviso resta qui. L'avviso del journal
+     * resta per ogni origine (`s` non è journaled, ma un journal non scritto blocca i pagamenti e l'operatore deve
+     * saperlo comunque: con quell'avviso la Console non pubblica il suo).
+     */
+    private fun notifyFinished(run: FinishedRun, delivered: Boolean) {
+        val consoleNotifies = delivered && run.origin == RunOrigin.CONSOLE_PING && run.command == CommandCode.STATUS
+        if (!consoleNotifies) notifyOutcome(run)
         run.journalError?.let {
             notifications.error("Journal", "Journal non scritto: pagamenti bloccati. $it", openWindow = AppWindowId.JOURNAL)
         }
     }
 
-    private fun notifyAnswered(title: String, head: String, outcome: CommandOutcome.Answered) {
-        val result = outcome.response as? HasResult
-        when {
-            outcome.needsReview -> notifications.warning(
-                title,
-                "$head: ${verdictText(result)} ma da verificare: possibile doppio addebito. Esegui Ultimo esito (G) o Totali",
-                openWindow = AppWindowId.JOURNAL,
-            )
-            result == null -> notifications.success(title, "$head: risposta ricevuta")
-            result.verdict == Verdict.APPROVED -> notifications.success(title, "$head: APPROVATO")
-            result.verdict == Verdict.DECLINED -> notifications.warning(title, "$head: RIFIUTATO: ${declineDescription(outcome.response, result)}")
-            else -> notifications.warning(title, "$head: ${verdictText(result)}")
+    private fun notifyOutcome(run: FinishedRun) {
+        val title = CommandTitles.title(run.command)
+        val head = title + (run.request.amountCents?.let { " " + formatCents(it) } ?: "")
+        when (val outcome = run.outcome) {
+            is CommandOutcome.Answered -> notifyAnswered(title, head, outcome)
+            is CommandOutcome.Acknowledged -> notifications.success(title, "$head: confermato dal terminale")
+            is CommandOutcome.Unknown -> notifications.error(title, "$head: ${unknownText(run.command)}", openWindow = AppWindowId.JOURNAL)
+            is CommandOutcome.NotSent, is CommandOutcome.Refused, is CommandOutcome.Failed ->
+                notifications.error(title, "$head: ${FailureMessages.forOutcome(outcome) ?: "comando non riuscito"}")
         }
     }
 
-    private fun verdictText(result: HasResult?): String = when (result?.verdict) {
+    private fun notifyAnswered(title: String, head: String, outcome: CommandOutcome.Answered) {
+        val result = outcome.response as? HasResult
+        val command = outcome.command
+        when {
+            outcome.needsReview -> notifications.warning(
+                title,
+                "$head: ${verdictText(command, result)} ma da verificare: possibile doppio addebito. Esegui Ultimo esito (G) o Totali",
+                openWindow = AppWindowId.JOURNAL,
+            )
+            result == null -> notifications.success(title, "$head: risposta ricevuta")
+            result.verdict == Verdict.APPROVED -> notifications.success(title, "$head: ${CommandTitles.approvedWord(command)}")
+            result.verdict == Verdict.DECLINED -> notifications.warning(title, "$head: RIFIUTATO: ${declineDescription(outcome.response, result)}")
+            else -> notifications.warning(title, "$head: ${verdictText(command, result)}")
+        }
+    }
+
+    private fun verdictText(command: CommandCode, result: HasResult?): String = when (result?.verdict) {
         null -> "risposta ricevuta"
-        Verdict.APPROVED -> "APPROVATO"
+        Verdict.APPROVED -> CommandTitles.approvedWord(command)
         Verdict.DECLINED -> "RIFIUTATO"
         Verdict.CARD_NOT_PRESENT -> "carta non presente (05)"
         Verdict.UNKNOWN_TAG -> "tag sconosciuto (09)"
@@ -332,9 +354,16 @@ class TerminalSessionService(
         return description?.takeIf { it.isNotEmpty() } ?: "esito ${result.resultCode}"
     }
 
+    /**
+     * Cosa resta bloccato dopo un esito sconosciuto, con la regola di PaymentBlockPolicy: un comando che muove denaro
+     * blocca tutti i journaled, un H solo la famiglia E V (P X S H), un C solo un'altra C.
+     *
+     * Prima un H sconosciuto diceva "pagamenti bloccati" mentre p, i e c restavano ammessi (e il banner diceva
+     * giusto); ora il testo elenca i comandi bloccati.
+     */
     private fun unknownText(command: CommandCode): String = when {
-        command.movesMoney || command == CommandCode.CARD_VERIFICATION ->
-            "esito sconosciuto, pagamenti bloccati: esegui Ultimo esito (G)"
+        command.movesMoney -> "esito sconosciuto, pagamenti bloccati: esegui Ultimo esito (G)"
+        command == CommandCode.CARD_VERIFICATION -> "esito sconosciuto, bloccati P, X, S e H: esegui Ultimo esito (G)"
         command == CommandCode.CLOSE_SESSION ->
             "esito sconosciuto, nuova chiusura contabile bloccata: verifica con Ultimo esito (G) o Totali"
         else -> "esito sconosciuto: esegui Ultimo esito (G)"

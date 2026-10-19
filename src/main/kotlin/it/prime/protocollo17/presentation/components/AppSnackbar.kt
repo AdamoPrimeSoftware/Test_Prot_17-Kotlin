@@ -143,7 +143,7 @@ private fun AppSnackbarPreview() {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf(
                 NoticeTone.SUCCESS to "Pagamento 0,10 €: APPROVATO",
-                NoticeTone.ERROR to "Esito sconosciuto: Pagamento 0,10 €, pagamenti bloccati: esegui Ultimo esito (G)",
+                NoticeTone.ERROR to "Pagamento 0,10 €: esito sconosciuto, pagamenti bloccati: esegui Ultimo esito (G)",
             ).forEach { (tone, text) ->
                 Snackbar(modifier = Modifier.padding(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {

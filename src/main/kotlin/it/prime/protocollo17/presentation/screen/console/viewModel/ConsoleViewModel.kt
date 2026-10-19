@@ -86,9 +86,6 @@ class ConsoleViewModel(
     /** Richiesta in attesa del dialog ConfirmRun (chiusura contabile). */
     private var pendingRun: Ecr17Request? = null
 
-    /** F5/Stato lanciato dalla barra: il suo esito diventa un evento (§6.5). */
-    private var pingPending = false
-
     /** Esito di G mostrato nel dialog di risoluzione, per tentativo: va scritto nel journal con la risoluzione. */
     private var gForDialog: Pair<String, CommandOutcome.Answered>? = null
 
@@ -268,21 +265,27 @@ class ConsoleViewModel(
         }
     }
 
+    /**
+     * Esiti dei comandi partiti da questa finestra. Il ping si riconosce dall'origine: prima un flag `pingPending`
+     * impostato dopo `run` lo distingueva da un `s` lanciato dal form, mentre ora l'origine [RunOrigin.CONSOLE_PING]
+     * dice anche al servizio di non pubblicare il suo avviso, così l'operatore vede un solo avviso del ping.
+     */
     private fun onFinished(run: FinishedRun) {
-        if (run.origin != RunOrigin.CONSOLE) return
-        if (run.command == CommandCode.STATUS && pingPending) {
-            pingPending = false
-            emit(pingEvent(run))
+        when (run.origin) {
+            RunOrigin.CONSOLE_PING -> pingEvent(run)?.let(::emit)
+            RunOrigin.CONSOLE -> if (run.command == CommandCode.LAST_RESULT) openResolveAfterG(run)
+            RunOrigin.JOURNAL -> Unit
         }
-        if (run.command == CommandCode.LAST_RESULT) {
-            // G mai automatico (U7): qui si apre solo il dialog; la decisione resta all'operatore.
-            val g = run.outcome as? CommandOutcome.Answered ?: return
-            val unresolved = journal.unresolved.value
-            val attempt = unresolved.maxByOrNull { it.createdAt } ?: return
-            gForDialog = attempt.attemptId to g
-            val model = resolveModel(attempt, unresolved.size, gRun = run, g = g)
-            _uiState.update { it.copy(dialog = ConsoleDialog.Resolve(model)) }
-        }
+    }
+
+    /** G mai automatico (U7): qui si apre solo il dialog; la decisione resta all'operatore. */
+    private fun openResolveAfterG(run: FinishedRun) {
+        val g = run.outcome as? CommandOutcome.Answered ?: return
+        val unresolved = journal.unresolved.value
+        val attempt = unresolved.maxByOrNull { it.createdAt } ?: return
+        gForDialog = attempt.attemptId to g
+        val model = resolveModel(attempt, unresolved.size, gRun = run, g = g)
+        _uiState.update { it.copy(dialog = ConsoleDialog.Resolve(model)) }
     }
 
     // ─── Form ─────────────────────────────────────────────────────────────────────
@@ -396,26 +399,27 @@ class ConsoleViewModel(
     private fun pingStatus() {
         val state = _uiState.value
         if (state.busy || state.linkBusy) return
-        if (start(StatusRequest, showResult = false)) pingPending = true
+        start(StatusRequest, origin = RunOrigin.CONSOLE_PING)
     }
 
     /**
      * Un solo punto verso il runner: rifiuti tradotti in evento o dialog (M7: mai accodare). true = partito.
-     * [showResult]: il pannello torna alla scheda Esito (e lascia la voce di cronologia che si stava guardando),
-     * così l'esito del comando appena lanciato è quello visibile; F5 no, il suo esito arriva come avviso.
+     * Avviato un comando, il pannello torna alla scheda Esito (e lascia la voce di cronologia che si stava
+     * guardando), così l'esito del comando appena lanciato è quello visibile; il ping ([RunOrigin.CONSOLE_PING]) no,
+     * il suo esito arriva come avviso.
      *
      * Con un'operazione di collegamento in corso ([ConsoleUiState.linkBusy]) il comando non parte: il client è
      * occupato e lo rifiuterebbe con `NotSent(Busy)` dopo che il repository ha già scritto il tentativo nel journal.
      * Le azioni lo controllano già prima; qui resta la difesa per ConfirmRun di un dialog aperto prima del test.
      */
-    private fun start(request: Ecr17Request, showResult: Boolean = true): Boolean {
+    private fun start(request: Ecr17Request, origin: RunOrigin = RunOrigin.CONSOLE): Boolean {
         if (_uiState.value.linkBusy) {
             emit(ConsoleEvent.ShowError(LINK_BUSY_MESSAGE))
             return false
         }
-        return when (val result = runner.run(request, RunOrigin.CONSOLE)) {
+        return when (val result = runner.run(request, origin)) {
             RunStart.Started -> {
-                if (showResult) _uiState.update { it.copy(viewedHistory = null, resultTab = ResultTab.RESULT) }
+                if (origin != RunOrigin.CONSOLE_PING) _uiState.update { it.copy(viewedHistory = null, resultTab = ResultTab.RESULT) }
                 true
             }
             RunStart.Busy, is RunStart.InvalidConfig -> {
@@ -695,7 +699,13 @@ class ConsoleViewModel(
         }
     }
 
-    private fun pingEvent(run: FinishedRun): ConsoleEvent {
+    /**
+     * Unico avviso del ping: per [RunOrigin.CONSOLE_PING] il servizio non pubblica quello dell'esito. null se il
+     * journal non è stato scritto (una prova orfana allegata durante lo `s`): resta l'errore del servizio, che non
+     * scompare da solo. Prima l'avviso informativo del ping, sullo stesso snackbar, lo sostituiva.
+     */
+    private fun pingEvent(run: FinishedRun): ConsoleEvent? {
+        if (run.journalError != null) return null
         val outcome = run.outcome
         val response = (outcome as? CommandOutcome.Answered)?.response as? StatusResponse
         return if (response != null) {

@@ -16,7 +16,12 @@ object SimCatalog {
     val faults: List<SimOption> = listOf(
         SimOption("NONE", "Nessun guasto", "Comportamento regolare: ACK, progress ed esito come il terminale Ingenico osservato."),
         SimOption("NO_ACK", "Nessun ACK", "Nessun ACK della richiesta, ma elabora e invia l'esito regolare."),
-        SimOption("PROGRESS_NO_ACK", "Nessun ACK, con progress", "Nessun ACK, poi il progress dopo il ritardo impostato e l'esito regolare."),
+        SimOption(
+            "PROGRESS_NO_ACK",
+            "Nessun ACK, con progress",
+            "Nessun ACK, poi il progress a min(Ritardo progress, ritardo dell'esito, che per s, T e G è al più 300 ms), " +
+                "quindi mai dopo l'esito, e l'esito regolare.",
+        ),
         SimOption("SILENT", "Silenzio", "Nulla: né ACK né esito."),
         SimOption("NAK_ONCE", "NAK una volta", "NAK al primo invio, poi ACK alla ritrasmissione ed esito."),
         SimOption("NAK_ALWAYS", "NAK sempre", "NAK a ogni invio della richiesta."),
@@ -28,7 +33,13 @@ object SimCatalog {
         SimOption("UNEXPECTED_FRAME_BEFORE_RESULT", "Frame inatteso prima dell'esito", "Prima dell'esito invia un 'U' stantio, poi l'esito regolare."),
         SimOption("BAD_LRC_RESULT_ONCE", "LRC errato sull'esito", "Primo esito con LRC corrotto; dopo il NAK dell'ECR lo reinvia corretto."),
         SimOption("BARE_ACK", "ACK nudo", "ACK di 1 byte (06) seguito subito dall'esito."),
-        SimOption("STALE_RESULT_ON_CONNECT", "Esito stantio alla connessione", "Appena connesso invia l'ultimo esito (frame vecchio)."),
+        SimOption(
+            "STALE_RESULT_ON_CONNECT",
+            "Esito stantio alla connessione",
+            "A ogni connessione, prima di conoscere il comando, invia l'ultimo esito (frame vecchio): vale anche per s, T e G " +
+                "con 'Guasto solo sui comandi finanziari' attivo. Un G con questo guasto allega l'esito stantio come prova " +
+                "(EVIDENCE) all'ultimo tentativo da risolvere.",
+        ),
         SimOption(
             "LATE_RESULT_AFTER_NEXT_SEND",
             "Esito tardivo",

@@ -7,6 +7,9 @@ import it.prime.protocollo17.domain.model.settings.SimulatorSettings
 import it.prime.protocollo17.domain.model.simulator.SimCatalog
 import it.prime.protocollo17.domain.model.simulator.SimOption
 import it.prime.protocollo17.domain.repository.SimulatorController
+import it.prime.protocollo17.presentation.state.AppNotifications
+import it.prime.protocollo17.presentation.state.AppWindowId
+import it.prime.protocollo17.presentation.state.CommandRunner
 import it.prime.protocollo17.presentation.util.disposeSafely
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -28,8 +31,21 @@ import kotlinx.coroutines.launch
  * Le scelte (guasti, decisioni, LRC) vengono da SimCatalog: la presentation non può importare `ecr17.sim` (§2.10)
  * e un valore fuori catalogo non arriva mai nelle impostazioni. La porta occupata non è un'eccezione ma uno stato
  * (`statusError` accanto al campo porta): è un caso normale, un'altra istanza o un altro programma.
+ *
+ * Prima le voci del menu Strumenti erano disabilitate durante un comando ma i pulsanti di questa finestra no: "Ferma"
+ * o un cambio di porta durante un pagamento verso il simulatore chiudevano la connessione e lasciavano l'esito
+ * sconosciuto. Ora il ViewModel osserva [CommandRunner] e segue la stessa regola del menu: con un comando in corso
+ * avvio, arresto, porta, destinazione del terminale e azzeramento dello stato sono disabilitati nella vista e
+ * rifiutati qui ([blockedDuringCommand]); una porta digitata prima del comando si salva quando il comando finisce,
+ * con un avviso nella finestra, oppure, se la finestra si chiude prima, si perde con un avviso nella finestra
+ * principale ([notifications]). Guasti, decisione e ritardi restano modificabili: valgono dalla richiesta successiva.
  */
-class SimulatorViewModel(private val simulator: SimulatorController, private val settings: SettingsRepository) : ScreenModel {
+class SimulatorViewModel(
+    private val simulator: SimulatorController,
+    private val settings: SettingsRepository,
+    private val runner: CommandRunner,
+    private val notifications: AppNotifications,
+) : ScreenModel {
 
     private val _uiState = MutableStateFlow(initialState())
     val uiState: StateFlow<SimulatorUiState> = _uiState.asStateFlow()
@@ -58,9 +74,22 @@ class SimulatorViewModel(private val simulator: SimulatorController, private val
         screenModelScope.launch { simulator.stats.collect { s -> _uiState.update { it.copy(stats = s) } } }
         screenModelScope.launch { simulator.log.collect { l -> _uiState.update { it.copy(log = l) } } }
         screenModelScope.launch { simulator.isTarget.collect { t -> _uiState.update { it.copy(isTarget = t) } } }
+        screenModelScope.launch {
+            runner.state.map { it.running != null }.distinctUntilChanged().collect { running ->
+                _uiState.update { it.copy(commandRunning = running) }
+                // Una porta rimandata perché il comando era in corso si salva ora (con il debounce ancora attivo ci
+                // pensa lui alla scadenza), con un avviso: il riavvio arriva molto dopo l'ultimo tasto.
+                if (!running && portCommit == null) commitPendingPort()?.let(::announceDeferredPort)
+            }
+        }
     }
 
     fun onAction(action: SimulatorAction) {
+        // La vista disabilita già questi controlli; il controllo qui copre lo stato cambiato tra disegno e clic.
+        if (action.blockedDuringCommand() && isCommandRunning()) {
+            _events.trySend(SimulatorEvent.ShowError("$COMMAND_RUNNING_HINT: riprova quando il comando è finito"))
+            return
+        }
         when (action) {
             SimulatorAction.Start -> {
                 // Una porta appena digitata vale per questo avvio, senza aspettare il debounce.
@@ -96,12 +125,42 @@ class SimulatorViewModel(private val simulator: SimulatorController, private val
         }
     }
 
-    /** Chiudendo la finestra subito dopo aver scritto la porta, la porta non va persa: si salva ora. */
-    override fun onDispose() = disposeSafely(this) { flushPendingPort() }
+    /**
+     * Chiudendo la finestra subito dopo aver scritto la porta, la porta non va persa: si salva ora. Con un comando in
+     * corso invece si perde: salvarla riavvierebbe il simulatore e troncherebbe il comando, e dopo la chiusura non
+     * c'è più nessuno che aspetti la fine del comando. Prima si perdeva in silenzio, e l'operatore, che aveva visto
+     * la nuova porta nel campo, la credeva salvata; ora lo dice un avviso nella finestra principale.
+     */
+    override fun onDispose() = disposeSafely(this) {
+        flushPendingPort()
+        // Dopo flushPendingPort una porta resta in attesa solo se un comando è in corso.
+        pendingPort?.let { port ->
+            notifications.warning(
+                "Simulatore",
+                "Porta $port non salvata: un comando era in corso. Scrivila di nuovo nella finestra Simulatore",
+                openWindow = AppWindowId.SIMULATOR,
+            )
+        }
+    }
 
     private fun initialState(): SimulatorUiState {
         val sim = settings.getSnapshot().simulator
-        return SimulatorUiState(settings = sim, texts = NUMBER_FIELDS.associateWith { numberText(sim, it) })
+        return SimulatorUiState(
+            settings = sim,
+            texts = NUMBER_FIELDS.associateWith { numberText(sim, it) },
+            commandRunning = isCommandRunning(),
+        )
+    }
+
+    /** Lettura diretta dello stato del runner, non di uiState: è il valore più recente al momento dell'azione. */
+    private fun isCommandRunning(): Boolean = runner.state.value.running != null
+
+    /** Azioni che fermano o spostano il simulatore, o cambiano la destinazione del terminale (§6.14). */
+    private fun SimulatorAction.blockedDuringCommand(): Boolean = when (this) {
+        SimulatorAction.Start, SimulatorAction.Stop, SimulatorAction.UseAsTarget,
+        SimulatorAction.RestoreTarget, SimulatorAction.ResetState -> true
+        is SimulatorAction.SetNumber -> field == FIELD_PORT
+        else -> false
     }
 
     private fun updateSim(transform: (SimulatorSettings) -> SimulatorSettings) {
@@ -122,7 +181,7 @@ class SimulatorViewModel(private val simulator: SimulatorController, private val
      * su ogni valore intermedio (scrivendo 16000: 1, 16, 160, 1600, 16000). Una porta intermedia occupata darebbe un
      * errore di "porta in uso" nella finestra principale e un comando in corso verso il simulatore verrebbe troncato
      * con esito sconosciuto. La porta si salva [PORT_COMMIT_DELAY_MS] dopo l'ultimo tasto, o subito con Avvia e alla
-     * chiusura della finestra.
+     * chiusura della finestra; se a quel punto un comando è in corso, alla fine del comando ([commitPendingPort]).
      */
     private fun setNumber(field: String, text: String) {
         _uiState.update { it.copy(texts = it.texts + (field to text)) }
@@ -153,11 +212,17 @@ class SimulatorViewModel(private val simulator: SimulatorController, private val
         }
     }
 
+    private fun announceDeferredPort(port: Int) {
+        val restart = if (_uiState.value.running) ": simulatore riavviato sulla nuova porta" else ""
+        _events.trySend(SimulatorEvent.ShowInfo("Porta $port salvata a comando finito$restart"))
+    }
+
     private fun schedulePortCommit(port: Int) {
         portCommit?.cancel()
         pendingPort = port
         portCommit = screenModelScope.launch {
             delay(PORT_COMMIT_DELAY_MS)
+            portCommit = null
             commitPendingPort()
         }
     }
@@ -174,10 +239,19 @@ class SimulatorViewModel(private val simulator: SimulatorController, private val
         pendingPort = null
     }
 
-    private fun commitPendingPort() {
-        val port = pendingPort ?: return
+    /**
+     * Salva la porta in attesa. Con un comando in corso no: il controller riavvierebbe il simulatore sulla nuova porta
+     * e il comando verso il simulatore resterebbe con esito sconosciuto. La porta resta in attesa e la salva
+     * l'osservatore del runner a comando finito (caso tipico: porta scritta e pagamento lanciato prima della pausa).
+     * Restituisce la porta salvata, null se non c'era niente da salvare o se resta in attesa.
+     */
+    private fun commitPendingPort(): Int? {
+        val port = pendingPort ?: return null
+        if (isCommandRunning()) return null
         pendingPort = null
-        if (settings.getSnapshot().simulator.port != port) updateSim { it.copy(port = port) }
+        if (settings.getSnapshot().simulator.port == port) return null
+        updateSim { it.copy(port = port) }
+        return port
     }
 
     companion object {
@@ -189,6 +263,9 @@ class SimulatorViewModel(private val simulator: SimulatorController, private val
 
         /** Pausa di digitazione dopo cui la porta si salva (e il simulatore attivo si riavvia). */
         const val PORT_COMMIT_DELAY_MS = 800L
+
+        /** Testo accanto ai controlli disabilitati durante un comando, anche in testa all'errore di un'azione rifiutata. */
+        const val COMMAND_RUNNING_HINT = "Disabilitato durante un comando"
         private val NUMBER_FIELDS = listOf(FIELD_PORT, FIELD_ACK_DELAY, FIELD_PROGRESS_DELAY, FIELD_RESULT_DELAY)
 
         private fun numberText(sim: SimulatorSettings, field: String): String = when (field) {

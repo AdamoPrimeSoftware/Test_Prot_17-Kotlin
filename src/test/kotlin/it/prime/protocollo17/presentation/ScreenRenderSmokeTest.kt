@@ -147,6 +147,10 @@ class ScreenRenderSmokeTest {
                 onAction = {},
             )
         }
+        // Comando in corso: controlli disabilitati e riga di spiegazione (§6.14).
+        render(520, 420, dark = true) {
+            SimulatorScreen(SimulatorUiState(status = SimulatorStatus.Running(15577), isTarget = true, commandRunning = true), onAction = {})
+        }
     }
 
     private fun allTexts(p: ProtocolSettings): Map<OptionKey, String> = mapOf(

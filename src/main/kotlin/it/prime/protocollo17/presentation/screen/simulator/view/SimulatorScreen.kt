@@ -59,6 +59,11 @@ import it.prime.protocollo17.presentation.util.formatTimeMillis
  * Finestra Simulatore (§6.14): stato e porta (la porta occupata è un messaggio rosso accanto al campo, non un
  * errore che chiude qualcosa), comportamento del terminale simulato (guasti di §4.5 con la loro descrizione) e log
  * IN/OUT già mascherato. Il simulatore ascolta solo su 127.0.0.1: nessun prompt del firewall di Windows.
+ *
+ * Prima Avvia/Ferma, porta, "Usa come terminale", "Ripristina terminale" e "Azzera stato" restavano attivi durante
+ * un comando, mentre le stesse voci del menu Strumenti erano disabilitate: Ferma durante un pagamento verso il
+ * simulatore lasciava l'esito sconosciuto. Ora con `commandRunning` sono disabilitati, con una riga che spiega perché;
+ * la card Comportamento resta modificabile.
  */
 @Composable
 fun SimulatorScreen(state: SimulatorUiState, onAction: (SimulatorAction) -> Unit, modifier: Modifier = Modifier) {
@@ -99,25 +104,30 @@ private fun StatusCard(state: SimulatorUiState, onAction: (SimulatorAction) -> U
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f),
             )
+            // Come le voci del menu Strumenti: durante un comando Ferma o Avvia toccherebbero la connessione in uso.
+            val idle = !state.commandRunning
             if (state.running) {
-                OutlinedButton(onClick = { onAction(SimulatorAction.Stop) }) { Text("Ferma") }
+                OutlinedButton(onClick = { onAction(SimulatorAction.Stop) }, enabled = idle) { Text("Ferma") }
             } else {
-                Button(onClick = { onAction(SimulatorAction.Start) }, enabled = !state.starting) { Text("Avvia") }
+                Button(onClick = { onAction(SimulatorAction.Start) }, enabled = idle && !state.starting) { Text("Avvia") }
             }
         }
-        NumberTextField(
-            label = "Porta (solo 127.0.0.1)",
-            text = state.texts["port"] ?: state.settings.port.toString(),
-            onTextChange = { onAction(SimulatorAction.SetNumber("port", it)) },
-            suffix = null,
-            error = state.fieldErrors["port"] ?: state.statusError,
-            hint = "Salvata quando smetti di scrivere; con il simulatore attivo lo riavvia sulla nuova porta",
-            modifier = Modifier.width(280.dp),
-        )
+        PortField(state, onAction)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onAction(SimulatorAction.UseAsTarget) }, enabled = state.running && !state.isTarget) { Text("Usa come terminale") }
-            OutlinedButton(onClick = { onAction(SimulatorAction.RestoreTarget) }) { Text("Ripristina terminale") }
-            TextButton(onClick = { onAction(SimulatorAction.ResetState) }) { Text("Azzera stato") }
+            Button(
+                onClick = { onAction(SimulatorAction.UseAsTarget) },
+                enabled = !state.commandRunning && state.running && !state.isTarget,
+            ) { Text("Usa come terminale") }
+            OutlinedButton(onClick = { onAction(SimulatorAction.RestoreTarget) }, enabled = !state.commandRunning) { Text("Ripristina terminale") }
+            TextButton(onClick = { onAction(SimulatorAction.ResetState) }, enabled = !state.commandRunning) { Text("Azzera stato") }
+        }
+        if (state.commandRunning) {
+            Text(
+                "${SimulatorViewModel.COMMAND_RUNNING_HINT}: Ferma o una nuova porta chiuderebbero la connessione e l'esito " +
+                    "resterebbe sconosciuto. Guasti, decisione e ritardi restano modificabili e valgono dalla prossima richiesta.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         val stats = state.stats
         KeyValueTable(
@@ -130,6 +140,28 @@ private fun StatusCard(state: SimulatorUiState, onAction: (SimulatorAction) -> U
             ),
         )
     }
+}
+
+/**
+ * Campo porta, disabilitato durante un comando: ogni cambio di porta riavvia il simulatore attivo e troncherebbe la
+ * connessione in uso.
+ */
+@Composable
+private fun PortField(state: SimulatorUiState, onAction: (SimulatorAction) -> Unit) {
+    NumberTextField(
+        label = "Porta (solo 127.0.0.1)",
+        text = state.texts[SimulatorViewModel.FIELD_PORT] ?: state.settings.port.toString(),
+        onTextChange = { onAction(SimulatorAction.SetNumber(SimulatorViewModel.FIELD_PORT, it)) },
+        modifier = Modifier.width(280.dp),
+        suffix = null,
+        error = state.fieldErrors[SimulatorViewModel.FIELD_PORT] ?: state.statusError,
+        hint = if (state.commandRunning) {
+            SimulatorViewModel.COMMAND_RUNNING_HINT
+        } else {
+            "Salvata quando smetti di scrivere; con il simulatore attivo lo riavvia sulla nuova porta"
+        },
+        enabled = !state.commandRunning,
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -189,7 +221,11 @@ private fun BehaviorCard(state: SimulatorUiState, onAction: (SimulatorAction) ->
             checked = s.faultOnlyFinancial,
             onCheckedChange = { onAction(SimulatorAction.SetFaultOnlyFinancial(it)) },
             title = "Guasto solo sui comandi finanziari",
-            hint = "Stato, Totali e G restano regolari: utile per provare il recupero con G.",
+            // STALE_RESULT_ON_CONNECT agisce alla connessione, prima che il simulatore conosca il comando: lo switch
+            // non lo limita, e il testo non deve promettere un G regolare con quel guasto (§4.5).
+            hint = "Stato, Totali e G restano regolari: utile per provare il recupero con G. Non vale per " +
+                "'Esito stantio alla connessione': quel frame arriva a ogni connessione, anche con s, T e G, " +
+                "e un G lo allega come prova (EVIDENCE) all'ultimo tentativo da risolvere.",
         )
         SwitchRow(
             checked = s.closeAfterTransaction,
@@ -287,7 +323,7 @@ private fun SimulatorScreenRunningPreview() {
         Box(Modifier.size(680.dp, 720.dp)) {
             SimulatorScreen(
                 state = SimulatorUiState(
-                    status = SimulatorStatus.Running(15577), isTarget = true,
+                    status = SimulatorStatus.Running(15577), isTarget = true, commandRunning = true,
                     stats = SimStats(connections = 3, requests = 5, rejectedForLrc = 1, lastCommand = 'P', posTotalCents = 1_510),
                     log = listOf(
                         SimLogEntry(1, 1_760_000_000_000, "IN", "Richiesta 'P'", "02 30 30 … 03 2F"),

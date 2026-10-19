@@ -83,5 +83,5 @@ val appModule = module {
     factory { OptionsViewModel(settings = get(), dirs = get(), runner = get()) }
     factory { TrafficLogViewModel(traffic = get()) }
     factory { JournalViewModel(journal = get(), runner = get()) }
-    factory { SimulatorViewModel(simulator = get(), settings = get()) }
+    factory { SimulatorViewModel(simulator = get(), settings = get(), runner = get(), notifications = get()) }
 }

@@ -5,8 +5,16 @@ import it.prime.protocollo17.domain.model.simulator.SimStats
 import it.prime.protocollo17.domain.model.simulator.SimulatorFailure
 import it.prime.protocollo17.domain.model.simulator.SimulatorStatus
 import it.prime.protocollo17.domain.repository.SimulatorController
+import it.prime.protocollo17.ecr17.model.CommandCode
+import it.prime.protocollo17.presentation.FakeCommandRunner
 import it.prime.protocollo17.presentation.FakeSettings
+import it.prime.protocollo17.presentation.UiFixtures
 import it.prime.protocollo17.presentation.popStandaloneScreenModels
+import it.prime.protocollo17.presentation.state.AppNotifications
+import it.prime.protocollo17.presentation.state.AppWindowId
+import it.prime.protocollo17.presentation.state.RunOrigin
+import it.prime.protocollo17.presentation.state.RunStart
+import app.cash.turbine.test
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -17,9 +25,11 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -28,7 +38,8 @@ import org.junit.jupiter.api.Test
 
 /**
  * Simulatore (§6.14, R26): la porta occupata è uno stato visibile accanto al campo, non un'eccezione; le azioni
- * "Usa come terminale"/"Ripristina" sono quelle del controller, le stesse del menu Strumenti.
+ * "Usa come terminale"/"Ripristina" sono quelle del controller, le stesse del menu Strumenti, e come il menu sono
+ * rifiutate durante un comando (con avvio, arresto, porta e azzeramento dello stato).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SimulatorViewModelTest {
@@ -36,6 +47,8 @@ class SimulatorViewModelTest {
     private val status = MutableStateFlow<SimulatorStatus>(SimulatorStatus.Stopped)
     private lateinit var settings: FakeSettings
     private lateinit var simulator: SimulatorController
+    private val runner = FakeCommandRunner()
+    private val notifications = mockk<AppNotifications>(relaxed = true)
 
     /** Main in tempo virtuale: il debounce della porta si fa avanzare con advanceTimeBy. */
     private val main = UnconfinedTestDispatcher()
@@ -64,7 +77,16 @@ class SimulatorViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun vm() = SimulatorViewModel(simulator = simulator, settings = settings.repository)
+    private fun vm() = SimulatorViewModel(simulator = simulator, settings = settings.repository, runner = runner, notifications = notifications)
+
+    /** Pagamento in corso nel runner finto: resta in corso fino a [finishPayment]. */
+    private fun startPayment() {
+        assertEquals(RunStart.Started, runner.run(UiFixtures.requestFor(CommandCode.PAYMENT), RunOrigin.CONSOLE))
+    }
+
+    private fun finishPayment() {
+        runner.finish(UiFixtures.answered(CommandCode.PAYMENT, UiFixtures.payment()))
+    }
 
     @Test
     fun `Start porta lo stato a Running`() {
@@ -168,5 +190,124 @@ class SimulatorViewModelTest {
         vm.onAction(SimulatorAction.SetNumber("port", "16002"))
         vm.onDispose()
         assertEquals(16002, settings.value.simulator.port)
+    }
+
+    // ─── Comando in corso (§6.14) ────────────────────────────────────────────────
+
+    /** commandRunning segue il runner, anche per un comando già in corso all'apertura della finestra. */
+    @Test
+    fun `commandRunning segue lo stato del runner`() {
+        startPayment()
+        val vm = vm()
+        assertTrue(vm.uiState.value.commandRunning)
+        finishPayment()
+        assertFalse(vm.uiState.value.commandRunning)
+        startPayment()
+        assertTrue(vm.uiState.value.commandRunning)
+    }
+
+    /**
+     * Ferma o una nuova porta durante un pagamento verso il simulatore chiuderebbero la connessione con esito
+     * sconosciuto: come le voci del menu Strumenti, queste azioni sono rifiutate (con un messaggio) finché il comando
+     * è in corso, e funzionano di nuovo dopo.
+     */
+    @Test
+    fun `durante un comando avvio arresto porta destinazione e azzeramento sono rifiutati`() = runTest {
+        status.value = SimulatorStatus.Running(15577)
+        val vm = vm()
+        startPayment()
+        vm.events.test {
+            listOf(
+                SimulatorAction.Stop,
+                SimulatorAction.Start,
+                SimulatorAction.UseAsTarget,
+                SimulatorAction.RestoreTarget,
+                SimulatorAction.ResetState,
+                SimulatorAction.SetNumber(SimulatorViewModel.FIELD_PORT, "16000"),
+            ).forEach { action ->
+                vm.onAction(action)
+                val event = awaitItem() as SimulatorEvent.ShowError
+                assertTrue(event.message.startsWith(SimulatorViewModel.COMMAND_RUNNING_HINT), "$action: ${event.message}")
+            }
+        }
+        coVerify(exactly = 0) { simulator.stop() }
+        coVerify(exactly = 0) { simulator.start() }
+        verify(exactly = 0) { simulator.useAsTarget() }
+        verify(exactly = 0) { simulator.restoreTarget() }
+        verify(exactly = 0) { simulator.resetState() }
+        assertEquals("15577", vm.uiState.value.texts[SimulatorViewModel.FIELD_PORT], "il testo della porta non cambia")
+        assertEquals(15577, settings.value.simulator.port)
+
+        finishPayment()
+        vm.onAction(SimulatorAction.Stop)
+        coVerify(exactly = 1) { simulator.stop() }
+    }
+
+    /** Guasti, decisione, ritardi e switch valgono dalla richiesta successiva: restano modificabili durante un comando. */
+    @Test
+    fun `durante un comando guasti decisione e ritardi restano modificabili`() {
+        val vm = vm()
+        startPayment()
+        vm.onAction(SimulatorAction.SetFault("SILENT"))
+        vm.onAction(SimulatorAction.SetDecision("DECLINE"))
+        vm.onAction(SimulatorAction.SetNumber(SimulatorViewModel.FIELD_RESULT_DELAY, "500"))
+        vm.onAction(SimulatorAction.SetFaultOnlyFinancial(false))
+        vm.onAction(SimulatorAction.ClearLog)
+        val sim = settings.value.simulator
+        assertEquals("SILENT", sim.fault)
+        assertEquals("DECLINE", sim.decision)
+        assertEquals(500L, sim.resultDelayMs)
+        assertFalse(sim.faultOnlyFinancial)
+        verify { simulator.clearLog() }
+    }
+
+    /**
+     * Porta scritta e pagamento lanciato prima della pausa: salvarla alla scadenza riavvierebbe il simulatore sotto
+     * il pagamento. Resta in attesa (testo compreso) e si salva quando il comando finisce.
+     */
+    @Test
+    fun `una porta scritta prima del comando si salva a comando finito`() = runTest {
+        val vm = vm()
+        vm.events.test {
+            vm.onAction(SimulatorAction.SetNumber(SimulatorViewModel.FIELD_PORT, "16000"))
+            startPayment()
+            main.scheduler.advanceTimeBy(SimulatorViewModel.PORT_COMMIT_DELAY_MS + 1)
+            assertEquals(15577, settings.value.simulator.port, "nessun riavvio durante il comando")
+            vm.onAction(SimulatorAction.SetNumber(SimulatorViewModel.FIELD_ACK_DELAY, "60"))
+            assertEquals("16000", vm.uiState.value.texts[SimulatorViewModel.FIELD_PORT], "il testo in attesa resta")
+            expectNoEvents()
+            finishPayment()
+            assertEquals(16000, settings.value.simulator.port)
+            assertEquals(SimulatorEvent.ShowInfo("Porta 16000 salvata a comando finito"), awaitItem(), "avviso del salvataggio rimandato")
+        }
+    }
+
+    /**
+     * Chiusa la finestra durante il comando, la porta in attesa non si salva: troncherebbe il comando, e a finestra
+     * chiusa nessuno aspetta più la fine. Lo smontaggio è quello di Voyager (onDispose e scope cancellato).
+     */
+    @Test
+    fun `chiusura durante un comando non salva la porta`() {
+        val vm = vm()
+        vm.onAction(SimulatorAction.SetNumber(SimulatorViewModel.FIELD_PORT, "16003"))
+        startPayment()
+        vm.onDispose()
+        popStandaloneScreenModels()
+        finishPayment()
+        assertEquals(15577, settings.value.simulator.port)
+        assertEquals("16003", vm.uiState.value.texts[SimulatorViewModel.FIELD_PORT])
+        verify(exactly = 1) {
+            notifications.warning("Simulatore", match { it.startsWith("Porta 16003 non salvata") }, AppWindowId.SIMULATOR)
+        }
+    }
+
+    /** Senza comando in corso la chiusura salva la porta e non c'è nessun avviso di porta persa. */
+    @Test
+    fun `chiusura senza comando non avvisa`() {
+        val vm = vm()
+        vm.onAction(SimulatorAction.SetNumber(SimulatorViewModel.FIELD_PORT, "16004"))
+        vm.onDispose()
+        assertEquals(16004, settings.value.simulator.port)
+        verify(exactly = 0) { notifications.warning(any(), any(), any()) }
     }
 }
