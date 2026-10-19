@@ -114,7 +114,7 @@ class TrafficFormatterTest {
         assertEquals(
             listOf(
                 "$ts: Info   :#12 P avviato verso 192.168.1.131:5577 (INGENICO stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD " +
-                    "conn=PER_COMMAND to=2000/120000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off)",
+                    "conn=PER_COMMAND to=2000/180000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off)",
             ),
             lines(event),
             "CommandStarted",

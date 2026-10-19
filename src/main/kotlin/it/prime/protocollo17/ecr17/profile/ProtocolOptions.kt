@@ -29,7 +29,11 @@ enum class AppLrcRxPolicy { ACCEPT_ANY_MODE, STRICT }
 /**
  * Opzioni di sessione. Il client ne legge UNA istantanea per comando: le modifiche valgono dal comando successivo.
  *
- * I default sono quelli del profilo Ingenico osservato (U6): ACK 2 s, esito 120 s, connessione 5 s, drain 100 ms.
+ * I default sono quelli del profilo Ingenico osservato (U6): ACK 2 s, esito 180 s, connessione 5 s, drain 100 ms.
+ *
+ * L'esito era 120 s, dimensionato sui 48,6 s osservati (R3). Su un altro terminale Ingenico un rifiuto
+ * `CARD_SEARCH_TIMEOUT` (carta mai avvicinata) è arrivato dopo 128,7 s, dopo 120 s di silenzio (A§9.11): con 120 s
+ * sarebbe diventato un esito sconosciuto che blocca i pagamenti (M6). La scadenza resta fissa dall'ACK, mai estesa.
  */
 data class ProtocolOptions(
     val appLrcMode: LrcMode = LrcMode.STX,
@@ -40,7 +44,7 @@ data class ProtocolOptions(
     val connectionMode: ConnectionMode = ConnectionMode.PER_COMMAND,
     val connectTimeoutMs: Long = 5_000,
     val ackTimeoutMs: Long = 2_000,
-    val responseTimeoutMs: Long = 120_000,
+    val responseTimeoutMs: Long = 180_000,
     /** Reinvii su NAK esplicito valido (invii massimi per soli NAK = nakRetryCount + 1). U4. */
     val nakRetryCount: Int = 3,
     /** Reinvii su ACK mancante: solo con RETRANSMIT o per i comandi senza usesFinancialAckPolicy. U4. */
@@ -90,7 +94,7 @@ data class ProtocolOptions(
         retryCount("ackTimeoutRetransmitCount", ackTimeoutRetransmitCount)
     }
 
-    /** Riepilogo compatto per log e journal, es. "stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/120000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off". */
+    /** Riepilogo compatto per log e journal, es. "stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/180000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off". */
     fun summary(): String {
         val appRx = when (appLrcRx) {
             AppLrcRxPolicy.ACCEPT_ANY_MODE -> "ANY"

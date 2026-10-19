@@ -50,7 +50,7 @@ L'app deve:
 | U3 | LRC dei frame di controllo configurabile a parte: **in uscita** `WIRE` (7A, default) o `SAME_AS_APP` (78 in `stx`); **in ingresso** ETX obbligatorio, LRC diverso tollerato con warning nel log (default) oppure rigido. Applicazione **asimmetrica**: la tolleranza vale per l'ACK; un NAK senza ETX o con LRC di nessuna convenzione è "ambiguo" e non provoca mai un reinvio (§3.7) | §3.4, §3.7 |
 | U4 | Switch persistito: **ACK mancante su comando finanziario** → nessuna ritrasmissione, si passa all'attesa dell'esito ("implicit go-ahead", default) oppure ritrasmissione fino a `ackTimeoutRetransmitCount` (default 3) come i repo. Su **NAK esplicito** si ritrasmette fino a `nakRetryCount` (default 3). I due limiti sono separati | §3.16, §3.21 |
 | U5 | Switch persistito: **una connessione TCP per comando** (default) oppure connessione persistente | §3.16, §3.23 |
-| U6 | Timeout di default: ACK 2 s, esito 120 s, connessione 5 s; drain post-esito 100 ms (1,5 s con stampa scontrino su ECR). Tutti modificabili | §3.16 |
+| U6 | Timeout di default: ACK 2 s, esito 180 s (120 s fino al 2026-10-16: un rifiuto reale è arrivato dopo 128,7 s, A§9.11), connessione 5 s; drain post-esito 100 ms (1,5 s con stampa scontrino su ECR). Tutti modificabili | §3.16, §5.2.3 |
 | U7 | Esito sconosciuto (timeout o caduta dopo l'invio di una richiesta finanziaria) ⇒ **pagamenti bloccati** finché l'operatore non esegue `G` o non chiude il tentativo con conferma esplicita. `G` è solo **proposto** (pulsante), mai automatico. Journal persistente di ogni tentativo finanziario | §5.3, §6.8 |
 | U8 | Ogni risposta va confrontata con il codice atteso per il comando inviato: un `U` tardivo o un frame stantio **non** deve mai diventare un'approvazione | §3.21 |
 | U9 | Perimetro v1: tutti i comandi dei port **tranne** `U` (tokenizzazione) e `K` (VAS). Le operazioni solo-DLL (Refund, RefundExt, VoidR, LetturaCarta, StatoPos, seriale) sono rimandate | §1.3 |
@@ -1516,7 +1516,10 @@ enum class ControlLrcRxPolicy { TOLERANT, STRICT }
  */
 enum class AppLrcRxPolicy { ACCEPT_ANY_MODE, STRICT }
 
-/** Opzioni di sessione. Il client ne legge UNA istantanea per comando: le modifiche valgono dal comando successivo. */
+/**
+ * Opzioni di sessione. Il client ne legge UNA istantanea per comando: le modifiche valgono dal comando successivo.
+ * Esito 180 s dal 2026-10-16 (prima 120 s, R3): un CARD_SEARCH_TIMEOUT reale è arrivato dopo 128,7 s (A§9.11).
+ */
 data class ProtocolOptions(
     val appLrcMode: LrcMode = LrcMode.STX,
     val controlLrcTx: ControlLrcRule = ControlLrcRule.WIRE,
@@ -1526,7 +1529,7 @@ data class ProtocolOptions(
     val connectionMode: ConnectionMode = ConnectionMode.PER_COMMAND,
     val connectTimeoutMs: Long = 5_000,
     val ackTimeoutMs: Long = 2_000,
-    val responseTimeoutMs: Long = 120_000,
+    val responseTimeoutMs: Long = 180_000,
     /** Reinvii su NAK esplicito valido (invii massimi per soli NAK = nakRetryCount + 1). U4. */
     val nakRetryCount: Int = 3,
     /** Reinvii su ACK mancante: solo con RETRANSMIT o per i comandi senza usesFinancialAckPolicy. U4. */
@@ -1550,7 +1553,7 @@ data class ProtocolOptions(
     /** Solo coerenza STRUTTURALE (vedi sotto); lista vuota = valide. */
     fun validate(): List<ConfigProblem>
 
-    /** Riepilogo compatto per log e journal, es. "stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/120000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off". */
+    /** Riepilogo compatto per log e journal, es. "stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/180000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off". */
     fun summary(): String
 }
 
@@ -2057,7 +2060,7 @@ sequenceDiagram
     POS--xCLI: ACK perso o non inviato
     Note over CLI: 2 s senza ACK ne progress, policy IMPLICIT_GO_AHEAD, nessun reinvio
     CLI->>J: onPhase IMPLICIT_GO_AHEAD (record GO_AHEAD)
-    Note over CLI: fase AWAITING_RESULT, deadline esito = ora + 120 s
+    Note over CLI: fase AWAITING_RESULT, deadline esito = ora + 180 s
     POS-->>TCP: 01 OPERAZIONE IN CORSO 04
     TCP-->>CLI: Progress, evento alla UI
     POS-->>TCP: 02 ...E00... 03 21
@@ -2436,7 +2439,7 @@ package it.prime.protocollo17.domain.model.settings
 
 @Serializable
 data class AppSettings(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = SCHEMA_VERSION,             // 2 dal 2026-10-16 (companion object: const val SCHEMA_VERSION = 2)
     val terminal: TerminalSettings = TerminalSettings(),
     val protocol: ProtocolSettings = ProtocolSettings(),
     val ui: UiSettings = UiSettings(),
@@ -2471,7 +2474,7 @@ data class ProtocolSettings(
     val connectionMode: String = "PER_COMMAND",
     val connectTimeoutMs: Long = 5_000,
     val ackTimeoutMs: Long = 2_000,
-    val responseTimeoutMs: Long = 120_000,
+    val responseTimeoutMs: Long = 180_000,
     val nakRetryCount: Int = 3,
     val ackTimeoutRetransmitCount: Int = 3,
     val retryDelayMs: Long = 200,
@@ -2611,6 +2614,8 @@ class SettingsRepository(private val file: File) : AutoCloseable {
     override fun close()
 }
 ```
+
+**Migrazioni** (`data/local/settings/SettingsMigration.kt`, interna e pura): dopo la lettura `SettingsMigration.migrate` porta il file da `schemaVersion` alla versione corrente (`AppSettings.SCHEMA_VERSION`); se ha cambiato qualcosa, il contenuto letto diventa `lastSaved` e l'init chiede subito un salvataggio, così il file passa alla versione nuova invece di essere rimigrato a ogni avvio (log `settings.json: formato 1 aggiornato a 2 …`). Servono solo quando cambia il **default** di un campo esistente: con `encodeDefaults` il file salva anche i default, e un default nuovo non arriverebbe mai a chi ha già un settings.json; un campo nuovo prende invece il suo default alla lettura. Una versione più recente di quella corrente resta com'è. Un file **senza** la chiave `schemaVersion` (scritto a mano o parziale) vale v1, non la versione corrente che il default della proprietà darebbe: deve passare da tutte le migrazioni. **v1 → v2** (2026-10-16): `protocol.responseTimeoutMs` da 120000 a 180000 **solo se valeva ancora 120000** (il vecchio default); un valore scelto in Opzioni resta, e dalla v2 anche 120000 è una scelta dell'operatore. Test in `SettingsRepositoryTest` (v1 con 120000 ⇒ 180000 e file riscritto, nessuna seconda migrazione; v1 con 90000 ⇒ conservato; v2 con 120000 ⇒ invariato e nessuna scrittura; senza `schemaVersion` ⇒ come v1).
 
 `Json { prettyPrint = true; ignoreUnknownKeys = true; encodeDefaults = true }`. Caricamento: file assente ⇒ default; BOM UTF-8 rimosso; errore di parsing ⇒ copia in `settings.json.broken-<millis>` e default (mai sovrascrivere senza copia). Scrittura atomica `settings.json.part` + `Files.move(ATOMIC_MOVE, REPLACE_EXISTING)` (fallback senza ATOMIC_MOVE), sotto `synchronized(diskLock)`, saltata se uguale all'ultimo salvato; shutdown hook `Thread({ flushIfDirty() }, "settings-flush")`.
 
@@ -2896,7 +2901,7 @@ Un file al giorno, `traffic/yyyy_MM_dd-p17-traffic.txt` (stessa forma di `2026_0
 Righe prodotte da `TrafficFormatter.toFileLines` (catturate col simulatore in `NO_ACK` e opzioni Ingenico di default; indirizzo, numero di scambio e orari ritoccati, frame lunghi accorciati con `…`):
 
 ```
-14/10/2026-09:35:05-399: Info   :#12 P avviato verso 192.168.1.131:5577 (INGENICO stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/120000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off)
+14/10/2026-09:35:05-399: Info   :#12 P avviato verso 192.168.1.131:5577 (INGENICO stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/180000/5000 nak=3 ackRetx=3 delay=200 drain=100/1500 print=off)
 14/10/2026-09:35:05-399: Info   :#12 fase PREPARING
 14/10/2026-09:35:05-399: Info   :#12 fase CONNECTING
 14/10/2026-09:35:05-400: Info   :link Connecting 192.168.1.131:5577
@@ -3275,7 +3280,7 @@ Ogni finestra è un vero `Window` dichiarato nello scope `application {}` (mai a
 │  Row:     [Stato (F5)] [Test connessione]                          (Log) (Journal ②) (Simulatore ●) (⚙)     │
 ├ Sidebar 232dp ─────────────┬ Contenuto ─────────────────────────────────────────────────────────────────────┤
 │ PAGAMENTI                  │ ┌ UnresolvedBanner (ambra, solo con tentativi da risolvere) ─────────────────┐ │
-│  [P] Pagamento        ◀sel │ │ ⚠ Esito sconosciuto: Pagamento 0,10 € delle 09:35:05 (nessun esito in 120 s)│ │
+│  [P] Pagamento        ◀sel │ │ ⚠ Esito sconosciuto: Pagamento 0,10 € delle 09:35:05 (nessun esito in 180 s)│ │
 │  [X] Pagamento esteso      │ │   Pagamenti bloccati.   [Ultimo esito (G)]  [Chiudi tentativo…]  [Journal] │ │
 │  [S] Storno                │ └────────────────────────────────────────────────────────────────────────────┘ │
 │  [H] Verifica carta        │ ┌ Form (weight 1) ─────────────────────┐ ┌ [Esito] [Cronologia (12)] ───────┐ │
@@ -3546,7 +3551,7 @@ data class UnresolvedView(
     val attemptId: String,
     val title: String,            // "Pagamento 0,10 €" (o "Tentativo con dati incompleti")
     val time: String,             // "14/10 09:35:05"
-    val reason: String,           // da FailureMessages, es. "nessun esito entro 120 s dopo l'ACK" o "possibile doppio addebito"
+    val reason: String,           // da FailureMessages, es. "nessun esito entro 180 s dopo l'ACK" o "possibile doppio addebito"
     val needsReview: Boolean,     // esito ricevuto ma da verificare
     val blocksPayments: Boolean,
 )
@@ -3814,7 +3819,7 @@ Pannello `HistoryPanel` (scheda **Cronologia**): `LazyColumn(key = id)` con `App
 
 - spinner + "{titolo comando} in corso…";
 - **fase** (`ExchangePhase` ⇒ testo): `CONNECTING` "Connessione a {endpoint}…", `PRINTING_SETUP` "Abilitazione stampa su ECR…", `SENDING`/`AWAITING_ACK` "Richiesta inviata (invio n), attesa ACK…", `IMPLICIT_GO_AHEAD` "ACK non ricevuto: attendo l'esito senza reinviare", `ACKNOWLEDGED` "Richiesta accettata", `AWAITING_RESULT` "Attesa esito…" (+ " (ACK non ricevuto, nessun reinvio)" se `implicitGoAhead`), `RESULT_RECEIVED`/`DRAINING` "Esito ricevuto, chiusura dello scambio…";
-- **cronometro** aggiornato ogni 500 ms solo per la vista (non è un timeout, M8): durante l'handshake (`resultWaitStartedAt == null`) "00:01 / 00:02" = tempo dall'ultimo `SENDING` / `ackTimeoutMs`; dalla prima `AWAITING_RESULT` "00:23 / 02:00" = tempo da `resultWaitStartedAt` / `responseTimeoutMs`. Un ACK tardivo **non** azzera il cronometro, coerente con la deadline mai estesa;
+- **cronometro** aggiornato ogni 500 ms solo per la vista (non è un timeout, M8): durante l'handshake (`resultWaitStartedAt == null`) "00:01 / 00:02" = tempo dall'ultimo `SENDING` / `ackTimeoutMs`; dalla prima `AWAITING_RESULT` "00:23 / 03:00" = tempo da `resultWaitStartedAt` / `responseTimeoutMs`. Un ACK tardivo **non** azzera il cronometro, coerente con la deadline mai estesa;
 - ultimo progress in monospace grande (`"OPERAZIONE IN CORSO "`), scontrino arrivato fin lì (ricomposto con `ReceiptText` come nella scheda Esito, §6.7: con il solo primo frame del formato a colonne le righe sono già da 24), avvisi;
 - pulsante **Annulla (Esc)** (`RequestCancel`); dopo la richiesta diventa "Annullamento…" disabilitato. `StopOnEscape(enabled = state.escapeCancels)`.
 
@@ -4562,7 +4567,7 @@ Profilo `Frames.fast` (stx, `WIRE`, tollerante, `IMPLICIT_GO_AHEAD`) salvo dove 
 
 | Test | Casi |
 |---|---|
-| `SettingsRepositoryTest` (`@TempDir`) | file assente ⇒ default; BOM; JSON rotto ⇒ `settings.json.broken-*` + default; più `update` ravvicinati ⇒ una scrittura; nessun `.part` residuo; chiavi sconosciute ignorate; `close()` salva subito |
+| `SettingsRepositoryTest` (`@TempDir`) | file assente ⇒ default; BOM; JSON rotto ⇒ `settings.json.broken-*` + default; più `update` ravvicinati ⇒ una scrittura; nessun `.part` residuo; chiavi sconosciute ignorate; `close()` salva subito; **migrazione v1 → v2** (§5.2.3): v1 con 120000 ⇒ 180000, `schemaVersion` 2, file riscritto subito e nessuna seconda migrazione; v1 con 90000 ⇒ conservato; v2 con 120000 ⇒ invariato senza scritture (verificato dopo `close()`); file senza `schemaVersion` con 120000 ⇒ trattato come v1, 180000; default `SCHEMA_VERSION` 2 e 180000 |
 | `ConfigResolverTest` | Ingenico di default ⇒ porta 5577 e `ProtocolOptions()`; `ProtocolSettings()` coincide campo per campo con `ProtocolOptions()` e con `profileDefaults(INGENICO)`; `withValue(ACK_TIMEOUT_MS, "3000")`; `appLrcMode = "sxt"` ⇒ issue e `usable == false`; CCV senza porta ⇒ problema "porta"; porta 20007 ⇒ warning ZVT/OPI; CCV ⇒ warning ASSUMPTION; `parseInput(ACK_TIMEOUT_MS, "40")` ⇒ failure con messaggio; file con `ackTimeoutMs = 40` ⇒ warning fuori range ma config utilizzabile |
 | `PaymentBlockPolicyTest` | `UNKNOWN` di `P` blocca tutti i journaled; **`UNKNOWN` di `H` blocca `P X S H` ma non `p i c C`**; `UNKNOWN` di `C` blocca solo `C`; `RESULT` con `needsReview` di `P` blocca; entry con `command == null` blocca tutti i journaled; entry non persistita (`UNKNOWN` forzato) blocca; `s T G E R` mai bloccati |
 | `JournalStoreTest` | append + rilettura; ultima riga troncata saltata e salvata in `.corrupt-*`; più avvii sulla stessa riga troncata ⇒ un solo `.corrupt-*`, una riga nuova conservata senza ripetere le vecchie; **riga CREATED corrotta con SENDING/UNKNOWN integri** ⇒ i record validi sono letti; compattazione che conserva `UNKNOWN`, da verificare e recenti, crea `.bak`, scrittura atomica |
@@ -4761,11 +4766,11 @@ Il filo del terminale Ingenico è stato ricostruito dai log della DLL IAE37 (Ing
 |---|---|---|
 | R1 | ACK scartati per LRC di controllo diverso ⇒ ritrasmissione di un pagamento (A§12.9) | `ControlLrcRule` separata, splitter tollerante sull'ACK con ETX obbligatorio, progress come ACK implicito, `IMPLICIT_GO_AHEAD` di default (SE-04/05/08/44) |
 | R2 | Esito tardivo o stantio attribuito al comando sbagliato | `PER_COMMAND`; in `PERSISTENT` chiusura del link dopo ogni esito mancante o sospetto; `preSendQuietMs`; orfani loggati e allegati al journal; codice atteso obbligatorio anche nell'handshake; `EARLY_RESULT` da verificare; blocco per famiglia di `H` (SE-17/18/19/47, CL-23/25, IT-22) |
-| R3 | Timeout esito troppo corto (48,6 s osservati) | default 120 s, deadline mai estesa ma configurabile |
+| R3 | Timeout esito troppo corto (48,6 s osservati sul DESK3200; 128,7 s per un `CARD_SEARCH_TIMEOUT` su un altro Ingenico, A§9.11) | default 180 s (era 120 s; migrazione delle impostazioni salvate v1 → v2, §5.2.3), deadline mai estesa ma configurabile fino a 600 s |
 | R4 | Layout non verificati (`i`, `c`/`v`, S-84, H-KO, `G` dopo `p/i/c`; X-92 confermato su un altro terminale Ingenico, A§9.11) | parser dedicati, payload grezzo sempre conservato e mostrato con pos/len; catture dal log traffico; i layout reali di `s` testuale e della fine scontrino già trovati in A§9.11 |
 | R5 | Testo non ASCII sposta i campi | uscita solo ASCII con errore visibile; ingresso ISO-8859-1 |
 | R6 | CCV senza Protocollo 17 (solo ZVT/OPI) | profilo marcato IPOTESI, porta obbligatoria, avviso sulle porte ZVT/OPI |
-| R7 | `IMPLICIT_GO_AHEAD` attende 120 s se il frame si è davvero perso | fase GO_AHEAD visibile nell'overlay, Annulla con esito sconosciuto, NAK tardivo gestito (SE-30) |
+| R7 | `IMPLICIT_GO_AHEAD` attende tutto il timeout esito (180 s) se il frame si è davvero perso | fase GO_AHEAD visibile nell'overlay, Annulla con esito sconosciuto, NAK tardivo gestito (SE-30) |
 | R8 | Il terminale non accetta il nostro ACK `7A` e ritrasmette l'esito | drain post-esito che lo rileva (`RESULT_RETRANSMITTED`, SE-27) **solo** per reinvii entro la finestra del drain (100 ms di default): per la sonda si alza il drain a ≥ 5 s (§9.2 punto 4); regola `SAME_AS_APP` selezionabile; un reinvio fuori finestra finisce come orfano del comando successivo e diventa prova nel journal |
 | R9 | Journal non scrivibile (disco pieno, permessi) | M3: prima del primo invio il comando non parte (`NotSent(Internal)`); dopo, lo scambio prosegue, l'entry è forzata `UNKNOWN` in memoria e blocca, `Finished` porta `journalError` |
 | R10 | Doppia istanza dell'app sullo stesso journal/terminale | `SingleInstanceGuard` |
@@ -4786,7 +4791,7 @@ Prima di tutto l'indirizzo: il 12/08/2026 il DESK3200 riportava nella risposta `
 5. **Persistenza**: modalità persistente, due `s` a 5 s e a 60 s; chi chiude il TCP (link `Closed(PEER_CLOSED)` nel log)?
 6. **NAK**: forma reale `15 03 69`, mai vista dal DESK3200 ma vista da un altro terminale Ingenico, che la mandava a un `t` (A§9.11): provocarla con un LRC applicativo sbagliato su `s`. Se il terminale usa un'altra forma, il log mostra `AMBIGUOUS_NAK`: in quel caso aggiornare la regola dopo la cattura, mai renderla tollerante a priori.
 7. **Comandi mai catturati sul DESK3200**: `X`, `H`, `S` (26 B accettato? la DLL inviava anche l'importo), `p`, `i`, `c`, `C`, `E1` + righe `S` (ordine rispetto all'esito, forma dell'ultima riga), `R` verso ECR. Salvare i log traffico come vettori di test. Già visti su un altro terminale Ingenico (A§9.11): `X` da 92 B con l'importo host uguale a quello richiesto; `E1` (solo ACK, mandato dalla DLL solo prima delle `X` con stampa su ECR; non persistente: il `P` che segue E1 + X + `s` non riceve righe `S`); righe `S` che arrivano **dopo** l'esito, ciascuna con il suo ACK: la prima 6-120 ms dopo l'ACK dell'esito, poi una ogni 130-200 ms (scontrino completo in circa 0,8 s), con l'ultima chiusa dall'ESC finale (§3.14).
-8. **Tempi**: ACK, progress ed esito rispetto ai default (ACK 2 s, esito 120 s); stato con parametri ECR assenti. Su un altro terminale Ingenico un rifiuto `CARD_SEARCH_TIMEOUT` (carta mai avvicinata) è arrivato **128,7 s** dopo il `P`, oltre i 120 s di default: con i default diventerebbe un esito sconosciuto che blocca (M6). Misurare quanto aspetta il DESK3200 prima di rinunciare alla carta; il default del timeout esito è da decidere a parte (R3).
+8. **Tempi**: ACK, progress ed esito rispetto ai default (ACK 2 s, esito 180 s); stato con parametri ECR assenti. Su un altro terminale Ingenico un rifiuto `CARD_SEARCH_TIMEOUT` (carta mai avvicinata) è arrivato **128,7 s** dopo il `P`, oltre i 120 s del default di allora: sarebbe diventato un esito sconosciuto che blocca (M6), e per questo il default è passato a 180 s (2026-10-16, R3, §5.2.3). Misurare quanto aspetta il DESK3200 prima di rinunciare alla carta: se supera i 180 s, alzare ancora il default (fino a 600 s) con una nuova migrazione.
 9. **CCV** (L§10.6): verificare che il terminale abbia un'applicazione Protocollo 17 su Ethernet e la sua porta; ripetere 1-8; promuovere il profilo da IPOTESI a OSSERVATO solo con una cattura.
 
 ### 9.3 Punti aperti che il design lascia configurabili

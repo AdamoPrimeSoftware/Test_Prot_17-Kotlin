@@ -50,7 +50,7 @@ data class UnresolvedView(
     val attemptId: String,
     val title: String,            // "Pagamento 0,10 €" (o "Tentativo con dati incompleti")
     val time: String,             // "14/10 09:35:05"
-    val reason: String,           // da FailureMessages, es. "nessun esito entro 120 s dopo l'ACK" o "possibile doppio addebito"
+    val reason: String,           // da FailureMessages, es. "nessun esito entro 180 s dopo l'ACK" o "possibile doppio addebito"
     val needsReview: Boolean,     // esito ricevuto ma da verificare
     val blocksPayments: Boolean,
 )

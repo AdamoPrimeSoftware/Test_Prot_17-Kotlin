@@ -3,7 +3,9 @@ package it.prime.protocollo17.domain.model.settings
 import kotlinx.serialization.Serializable
 
 // Impostazioni persistite in ~/.protocollo17/settings.json (§5.2). Ogni campo ha un default: un file vecchio o
-// parziale si legge sempre, e un campo nuovo prende il suo valore iniziale senza migrazioni.
+// parziale si legge sempre, e un campo nuovo prende il suo valore iniziale senza migrazioni. Serve una migrazione
+// (data/local/settings/SettingsMigration, schemaVersion) solo quando cambia il DEFAULT di un campo esistente: il file
+// salva anche i valori di default (encodeDefaults), quindi senza migrazione resterebbe il vecchio.
 
 /**
  * Radice delle impostazioni dell'app.
@@ -15,7 +17,7 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class AppSettings(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = SCHEMA_VERSION,
     val terminal: TerminalSettings = TerminalSettings(),
     val protocol: ProtocolSettings = ProtocolSettings(),
     val ui: UiSettings = UiSettings(),
@@ -24,7 +26,12 @@ data class AppSettings(
     val simulator: SimulatorSettings = SimulatorSettings(),
     /** Ultimi valori dei form: chiave esterna = lettera del comando ("P"), interna = FieldKey.name. */
     val drafts: Map<String, Map<String, String>> = emptyMap(),
-)
+) {
+    companion object {
+        /** Versione corrente del formato: 2 dal 2026-10-16 (timeout esito 180 s, SettingsMigration). */
+        const val SCHEMA_VERSION = 2
+    }
+}
 
 /** Destinazione del terminale e identificativi usati nelle richieste. */
 @Serializable
@@ -51,7 +58,7 @@ data class ProtocolSettings(
     val connectionMode: String = "PER_COMMAND",
     val connectTimeoutMs: Long = 5_000,
     val ackTimeoutMs: Long = 2_000,
-    val responseTimeoutMs: Long = 120_000,
+    val responseTimeoutMs: Long = 180_000,
     val nakRetryCount: Int = 3,
     val ackTimeoutRetransmitCount: Int = 3,
     val retryDelayMs: Long = 200,

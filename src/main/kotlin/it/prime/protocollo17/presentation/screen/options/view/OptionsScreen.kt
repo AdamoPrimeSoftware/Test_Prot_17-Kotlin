@@ -286,7 +286,7 @@ private fun TimingSection(state: OptionsUiState, onAction: (OptionsAction) -> Un
     SettingsCard(title = "Tempi e ritrasmissioni") {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             field(OptionKey.ACK_TIMEOUT_MS, "Timeout ACK", hint = "Default 2000")
-            field(OptionKey.RESPONSE_TIMEOUT_MS, "Timeout esito", hint = "Default 120000 (mai esteso)")
+            field(OptionKey.RESPONSE_TIMEOUT_MS, "Timeout esito", hint = "Default 180000 (mai esteso)")
             field(OptionKey.CONNECT_TIMEOUT_MS, "Timeout connessione", hint = "Default 5000")
             field(OptionKey.POST_RESULT_DRAIN_MS, "Drain post-esito", hint = "Silenzio dopo l'esito, default 100")
             field(OptionKey.RECEIPT_DRAIN_MS, "Drain scontrini", hint = "Con righe S attese, default 1500")

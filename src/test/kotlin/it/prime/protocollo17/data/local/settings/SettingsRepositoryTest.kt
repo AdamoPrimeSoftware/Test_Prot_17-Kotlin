@@ -35,6 +35,72 @@ class SettingsRepositoryTest {
         }
     }
 
+    // ─── Migrazione v1 → v2: timeout esito 120 → 180 s ─────────────────────────────
+
+    /**
+     * Un settings.json della versione 1 con il vecchio default (120 s) passa a 180 s e alla versione 2, e il file viene
+     * riscritto subito: senza migrazione resterebbe 120 s per sempre, perché il file salva anche i default.
+     */
+    @Test
+    fun `v1 con il vecchio default passa a 180 s e viene riscritto`() {
+        file.writeText("{\"schemaVersion\": 1, \"protocol\": {\"responseTimeoutMs\": 120000}, \"terminal\": {\"host\": \"10.0.0.5\"}}", Charsets.UTF_8)
+
+        SettingsRepository(file).use { repo ->
+            assertEquals(2, repo.getSnapshot().schemaVersion)
+            assertEquals(180_000L, repo.getSnapshot().protocol.responseTimeoutMs)
+            assertEquals("10.0.0.5", repo.getSnapshot().terminal.host, "il resto resta com'era")
+            // saveCount e non il contenuto del file: leggere mentre ATOMIC_MOVE lo sostituisce fallisce su Windows.
+            awaitTrue(message = "file migrato scritto subito, senza aspettare un'altra modifica") { repo.saveCount.get() >= 1 }
+        }
+        val saved = file.readText()
+        assertTrue(saved.contains("\"schemaVersion\": 2") && saved.contains("\"responseTimeoutMs\": 180000"), saved)
+        val again = SettingsRepository(file)
+        again.use { assertEquals(180_000L, it.getSnapshot().protocol.responseTimeoutMs) }
+        assertEquals(0, again.saveCount.get(), "nessuna seconda migrazione: il file è già v2")
+    }
+
+    /** Un file scritto a mano senza schemaVersion vale come v1, non come la versione corrente: passa dalle migrazioni. */
+    @Test
+    fun `file senza schemaVersion vale come v1`() {
+        file.writeText("{\"protocol\": {\"responseTimeoutMs\": 120000}}", Charsets.UTF_8)
+
+        SettingsRepository(file).use { repo ->
+            assertEquals(2, repo.getSnapshot().schemaVersion)
+            assertEquals(180_000L, repo.getSnapshot().protocol.responseTimeoutMs)
+        }
+    }
+
+    /** Un valore scelto dall'operatore resta il suo: la migrazione tocca solo il vecchio default. */
+    @Test
+    fun `v1 con un valore scelto lo conserva`() {
+        file.writeText("{\"schemaVersion\": 1, \"protocol\": {\"responseTimeoutMs\": 90000}}", Charsets.UTF_8)
+
+        SettingsRepository(file).use { repo ->
+            assertEquals(2, repo.getSnapshot().schemaVersion)
+            assertEquals(90_000L, repo.getSnapshot().protocol.responseTimeoutMs)
+        }
+    }
+
+    /** Dalla versione 2 in poi 120 s è una scelta dell'operatore (fatta dopo la migrazione) e non si tocca. */
+    @Test
+    fun `v2 con 120 s resta 120 s`() {
+        file.writeText("{\"schemaVersion\": 2, \"protocol\": {\"responseTimeoutMs\": 120000}}", Charsets.UTF_8)
+
+        val repo = SettingsRepository(file)
+        repo.use { assertEquals(120_000L, it.getSnapshot().protocol.responseTimeoutMs) }
+        // Dopo close(), che salva se lo stato differisce dal file: solo qui una scrittura sbagliata si vedrebbe.
+        assertEquals(0, repo.saveCount.get(), "nessuna migrazione, nessuna scrittura")
+    }
+
+    /** I default nuovi: versione 2, 180 s. */
+    @Test
+    fun `default versione 2 e 180 s`() {
+        assertEquals(AppSettings.SCHEMA_VERSION, AppSettings().schemaVersion)
+        assertEquals(2, AppSettings.SCHEMA_VERSION)
+        assertEquals(180_000L, AppSettings().protocol.responseTimeoutMs)
+        assertEquals(180_000L, SettingsMigration.migrate(AppSettings()).protocol.responseTimeoutMs, "v2 non si migra")
+    }
+
     /** PowerShell 5.1 (Set-Content -Encoding UTF8) scrive il BOM: prima il parsing falliva e si perdevano le impostazioni. */
     @Test
     fun `file con BOM viene letto`() {

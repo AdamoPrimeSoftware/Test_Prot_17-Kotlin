@@ -70,7 +70,7 @@ private fun KeyValueTablePreview() {
                 KeyValueRow("PAN", "***************4768", "13/19", emphasis = true),
                 KeyValueRow("Modalità lettura", "Contactless chip (CLI)", "32/3"),
                 KeyValueRow("Codice autorizzazione", "R48432", "35/6"),
-                KeyValueRow("Opzioni", "stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/120000/5000 nak=3"),
+                KeyValueRow("Opzioni", "stx/WIRE rx=TOLERANT/ANY ack=IMPLICIT_GO_AHEAD conn=PER_COMMAND to=2000/180000/5000 nak=3"),
             ),
             modifier = Modifier.padding(12.dp).width(420.dp),
         )

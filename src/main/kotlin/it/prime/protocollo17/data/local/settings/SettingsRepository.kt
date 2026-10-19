@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
@@ -61,6 +62,13 @@ class SettingsRepository internal constructor(
     @Volatile
     private var writeBlocked = false
 
+    /**
+     * Il contenuto letto da disco PRIMA di [SettingsMigration], se la migrazione lo ha cambiato: diventa [lastSaved],
+     * così il primo salvataggio (subito, dall'init) porta il file alla versione corrente invece di rimigrarlo a ogni
+     * avvio. Dichiarata prima di [_flow] per lo stesso motivo di [writeBlocked].
+     */
+    private var unmigratedOnDisk: AppSettings? = null
+
     private val _flow = MutableStateFlow(loadFromDisk())
     val flow: StateFlow<AppSettings> = _flow.asStateFlow()
 
@@ -75,7 +83,7 @@ class SettingsRepository internal constructor(
 
     /** Ultimo stato scritto con successo: evita riscritture identiche. Avanza solo se la scrittura riesce. */
     @Volatile
-    private var lastSaved: AppSettings = _flow.value
+    private var lastSaved: AppSettings = unmigratedOnDisk ?: _flow.value
 
     private val closed = AtomicBoolean(false)
 
@@ -95,6 +103,7 @@ class SettingsRepository internal constructor(
         }
         runCatching { Runtime.getRuntime().addShutdownHook(shutdownHook) }
             .onFailure { log.warn("Shutdown hook delle impostazioni non registrato: {}", it.message) }
+        if (unmigratedOnDisk != null) saveSignal.trySend(Unit)
     }
 
     fun getSnapshot(): AppSettings = _flow.value
@@ -144,14 +153,30 @@ class SettingsRepository internal constructor(
         }
         // BOM UTF-8: lo scrivono alcuni editor e Set-Content -Encoding UTF8 di PowerShell 5.1.
         val clean = raw.removePrefix(BOM)
-        return try {
+        val decoded = try {
             json.decodeFromString(AppSettings.serializer(), clean)
         } catch (e: Exception) {
             log.error("Parsing di {} fallito ({}): impostazioni di default. Recupera i valori dalla copia broken.", file.name, e.message)
             if (!copyAside()) writeBlocked = true
-            AppSettings()
+            return AppSettings()
         }
+        // Una chiave assente vale la versione più vecchia, non la corrente: un file scritto a mano (o parziale) senza
+        // schemaVersion deve passare da tutte le migrazioni, e il default della proprietà è quello di un oggetto nuovo.
+        val versioned = if (hasSchemaVersion(clean)) decoded else decoded.copy(schemaVersion = 1)
+        val migrated = SettingsMigration.migrate(versioned)
+        if (migrated != decoded) {
+            unmigratedOnDisk = decoded
+            log.info(
+                "{}: formato {} aggiornato a {} (timeout esito {} ms)",
+                file.name, versioned.schemaVersion, migrated.schemaVersion, migrated.protocol.responseTimeoutMs,
+            )
+        }
+        return migrated
     }
+
+    /** true se il JSON (già decodificato senza errori) ha la chiave schemaVersion alla radice. */
+    private fun hasSchemaVersion(clean: String): Boolean =
+        runCatching { "schemaVersion" in json.parseToJsonElement(clean).jsonObject }.getOrDefault(true)
 
     /**
      * Copia settings.json in `settings.json.broken-<millis>`. true se la copia esiste (o se il file non c'è più e
